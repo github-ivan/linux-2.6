@@ -108,6 +108,7 @@ static char *fail_over_mac;
 static int all_slaves_active = 0;
 static struct bond_params bonding_defaults;
 static int resend_igmp = BOND_DEFAULT_RESEND_IGMP;
+static int lacp_port_id = 1;
 
 module_param(max_bonds, int, 0);
 MODULE_PARM_DESC(max_bonds, "Max number of bonded devices");
@@ -148,7 +149,7 @@ module_param(lacp_rate, charp, 0);
 MODULE_PARM_DESC(lacp_rate, "LACPDU tx rate to request from 802.3ad partner; "
 			    "0 for slow, 1 for fast");
 module_param(ad_select, charp, 0);
-MODULE_PARM_DESC(ad_select, "803.ad aggregation selection logic; "
+MODULE_PARM_DESC(ad_select, "802.3ad aggregation selection logic; "
 			    "0 for stable (default), 1 for bandwidth, "
 			    "2 for count");
 module_param(min_links, int, 0);
@@ -177,6 +178,8 @@ MODULE_PARM_DESC(all_slaves_active, "Keep all frames received on an interface"
 module_param(resend_igmp, int, 0);
 MODULE_PARM_DESC(resend_igmp, "Number of IGMP membership reports to send on "
 			      "link failure");
+module_param(lacp_port_id, int, 0);
+MODULE_PARM_DESC(lacp_port_id, "802.3ad port id to send to switch in LACPDU");
 
 /*----------------------------- Global variables ----------------------------*/
 
@@ -1775,7 +1778,7 @@ int bond_enslave(struct net_device *bond_dev, struct net_device *slave_dev)
 		bond_set_slave_inactive_flags(new_slave);
 		/* if this is the first slave */
 		if (bond->slave_cnt == 1) {
-			SLAVE_AD_INFO(new_slave).id = 1;
+			SLAVE_AD_INFO(new_slave).id = lacp_port_id;
 			/* Initialize AD with the number of times that the AD timer is called in 1 second
 			 * can be called only after the mac address of the bond is set
 			 */
@@ -4561,6 +4564,16 @@ static int bond_check_params(struct bond_params *params)
 		resend_igmp = BOND_DEFAULT_RESEND_IGMP;
 	}
 
+	if (bond_mode == BOND_MODE_8023AD) {
+		/* we set upper limit to 65000 because new slave will increase port
+                   id so we don't want id to overflow */
+		if (lacp_port_id < 1 || lacp_port_id > 65000) {
+			pr_warning("Warning: lacp_port_id (%d) should be between "
+				   "1 and 65000, resetting to 1\n", lacp_port_id);
+			lacp_port_id = 1;
+		}
+	}
+
 	/* reset values for TLB/ALB */
 	if ((bond_mode == BOND_MODE_TLB) ||
 	    (bond_mode == BOND_MODE_ALB)) {
@@ -4734,6 +4747,7 @@ static int bond_check_params(struct bond_params *params)
 	params->all_slaves_active = all_slaves_active;
 	params->resend_igmp = resend_igmp;
 	params->min_links = min_links;
+	params->lacp_port_id = lacp_port_id;
 
 	if (primary) {
 		strncpy(params->primary, primary, IFNAMSIZ);

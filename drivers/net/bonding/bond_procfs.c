@@ -129,6 +129,7 @@ static void bond_info_show_master(struct seq_file *seq)
 		seq_printf(seq, "Min links: %d\n", bond->params.min_links);
 		seq_printf(seq, "Aggregator selection policy (ad_select): %s\n",
 			   ad_select_tbl[bond->params.ad_select].modename);
+		seq_printf(seq, "802.3ad starting port id: %d\n", bond->params.lacp_port_id);
 
 		if (bond_3ad_get_active_agg_info(bond, &ad_info)) {
 			seq_printf(seq, "bond %s has no active aggregator\n",

@@ -872,6 +872,38 @@ static ssize_t bonding_store_min_links(struct device *d,
 static DEVICE_ATTR(min_links, S_IRUGO | S_IWUSR,
 		   bonding_show_min_links, bonding_store_min_links);
 
+static ssize_t bonding_show_lacp_port_id(struct device *d,
+				      struct device_attribute *attr,
+				      char *buf)
+{
+	struct bonding *bond = to_bond(d);
+
+	return sprintf(buf, "%d\n", bond->params.lacp_port_id);
+}
+
+static ssize_t bonding_store_lacp_port_id(struct device *d,
+				       struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct bonding *bond = to_bond(d);
+	int ret;
+	unsigned int new_value;
+
+	ret = kstrtouint(buf, 0, &new_value);
+	if ((ret < 0) || (new_value < 1) || (new_value > 65000)) {
+		pr_err("%s: Ignoring invalid 802.3ad port id value %s.\n",
+		       bond->dev->name, buf);
+		return -EINVAL;
+	}
+
+	pr_info("%s: Setting 802.3ad port id value to %u\n",
+		bond->dev->name, new_value);
+	bond->params.lacp_port_id = new_value;
+	return count;
+}
+static DEVICE_ATTR(lacp_port_id, S_IRUGO | S_IWUSR,
+		   bonding_show_lacp_port_id, bonding_store_lacp_port_id);
+
 static ssize_t bonding_show_ad_select(struct device *d,
 				      struct device_attribute *attr,
 				      char *buf)
@@ -1664,6 +1696,7 @@ static struct attribute *per_bond_attrs[] = {
 	&dev_attr_all_slaves_active.attr,
 	&dev_attr_resend_igmp.attr,
 	&dev_attr_min_links.attr,
+	&dev_attr_lacp_port_id.attr,
 	NULL,
 };
 
