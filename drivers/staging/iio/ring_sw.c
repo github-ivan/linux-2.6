@@ -15,7 +15,7 @@
 #include <linux/sched.h>
 #include <linux/poll.h>
 #include "ring_sw.h"
-#include "trigger.h"
+#include <linux/iio/trigger.h>
 
 /**
  * struct iio_sw_ring_buffer - software ring buffer
@@ -24,7 +24,7 @@
  * @read_p:		read pointer (oldest available)
  * @write_p:		write pointer
  * @half_p:		half buffer length behind write_p (event generation)
- * @update_needed:	flag to indicated change in size requested
+ * @update_needed:	flag to indicate change in size requested
  *
  * Note that the first element of all ring buffers must be a
  * struct iio_buffer.
@@ -65,7 +65,7 @@ static inline void __iio_free_sw_ring_buffer(struct iio_sw_ring_buffer *ring)
 /* Lock always held if their is a chance this may be called */
 /* Only one of these per ring may run concurrently - enforced by drivers */
 static int iio_store_to_sw_ring(struct iio_sw_ring_buffer *ring,
-				unsigned char *data, s64 timestamp)
+				unsigned char *data)
 {
 	int ret = 0;
 	unsigned char *temp_ptr, *change_test_ptr;
@@ -147,7 +147,7 @@ static int iio_read_first_n_sw_rb(struct iio_buffer *r,
 	size_t data_available, buffer_size;
 
 	/* A userspace program has probably made an error if it tries to
-	 *  read something that is not a whole number of bpds.
+	 * read something that is not a whole number of bpds.
 	 * Return an error.
 	 */
 	if (n % ring->buf.bytes_per_datum) {
@@ -229,7 +229,7 @@ static int iio_read_first_n_sw_rb(struct iio_buffer *r,
 
 	/* setup the next read position */
 	/* Beware, this may fail due to concurrency fun and games.
-	 *  Possible that sufficient fill commands have run to push the read
+	 * Possible that sufficient fill commands have run to push the read
 	 * pointer past where we would be after the rip. If this occurs, leave
 	 * it be.
 	 */
@@ -256,11 +256,10 @@ error_ret:
 }
 
 static int iio_store_to_sw_rb(struct iio_buffer *r,
-			      u8 *data,
-			      s64 timestamp)
+			      u8 *data)
 {
 	struct iio_sw_ring_buffer *ring = iio_to_sw_ring(r);
-	return iio_store_to_sw_ring(ring, data, timestamp);
+	return iio_store_to_sw_ring(ring, data);
 }
 
 static int iio_request_update_sw_rb(struct iio_buffer *r)
@@ -329,6 +328,16 @@ static struct attribute_group iio_ring_attribute_group = {
 	.name = "buffer",
 };
 
+static const struct iio_buffer_access_funcs ring_sw_access_funcs = {
+	.store_to = &iio_store_to_sw_rb,
+	.read_first_n = &iio_read_first_n_sw_rb,
+	.request_update = &iio_request_update_sw_rb,
+	.get_bytes_per_datum = &iio_get_bytes_per_datum_sw_rb,
+	.set_bytes_per_datum = &iio_set_bytes_per_datum_sw_rb,
+	.get_length = &iio_get_length_sw_rb,
+	.set_length = &iio_set_length_sw_rb,
+};
+
 struct iio_buffer *iio_sw_rb_allocate(struct iio_dev *indio_dev)
 {
 	struct iio_buffer *buf;
@@ -341,6 +350,7 @@ struct iio_buffer *iio_sw_rb_allocate(struct iio_dev *indio_dev)
 	buf = &ring->buf;
 	iio_buffer_init(buf);
 	buf->attrs = &iio_ring_attribute_group;
+	buf->access = &ring_sw_access_funcs;
 
 	return buf;
 }
@@ -352,16 +362,5 @@ void iio_sw_rb_free(struct iio_buffer *r)
 }
 EXPORT_SYMBOL(iio_sw_rb_free);
 
-const struct iio_buffer_access_funcs ring_sw_access_funcs = {
-	.store_to = &iio_store_to_sw_rb,
-	.read_first_n = &iio_read_first_n_sw_rb,
-	.request_update = &iio_request_update_sw_rb,
-	.get_bytes_per_datum = &iio_get_bytes_per_datum_sw_rb,
-	.set_bytes_per_datum = &iio_set_bytes_per_datum_sw_rb,
-	.get_length = &iio_get_length_sw_rb,
-	.set_length = &iio_set_length_sw_rb,
-};
-EXPORT_SYMBOL(ring_sw_access_funcs);
-
-MODULE_DESCRIPTION("Industrialio I/O software ring buffer");
+MODULE_DESCRIPTION("Industrial I/O software ring buffer");
 MODULE_LICENSE("GPL");

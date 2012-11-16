@@ -67,7 +67,7 @@ struct usb_onetouch {
 		    vendorName, productName, useProtocol, useTransport, \
 		    initFunction, flags) \
 { USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
-  .driver_info = (flags)|(USB_US_TYPE_STOR<<24) }
+  .driver_info = (flags) }
 
 static struct usb_device_id onetouch_usb_ids[] = {
 #	include "unusual_onetouch.h"
@@ -312,6 +312,7 @@ static struct usb_driver onetouch_driver = {
 	.post_reset =	usb_stor_post_reset,
 	.id_table =	onetouch_usb_ids,
 	.soft_unbind =	1,
+	.no_dynamic_id = 1,
 };
 
 module_usb_driver(onetouch_driver);

@@ -253,7 +253,7 @@ static const struct snd_kcontrol_new max9877_controls[] = {
 /* This function is called from ASoC machine driver */
 int max9877_add_controls(struct snd_soc_codec *codec)
 {
-	return snd_soc_add_controls(codec, max9877_controls,
+	return snd_soc_add_codec_controls(codec, max9877_controls,
 			ARRAY_SIZE(max9877_controls));
 }
 EXPORT_SYMBOL_GPL(max9877_add_controls);
@@ -291,17 +291,7 @@ static struct i2c_driver max9877_i2c_driver = {
 	.id_table = max9877_i2c_id,
 };
 
-static int __init max9877_init(void)
-{
-	return i2c_add_driver(&max9877_i2c_driver);
-}
-module_init(max9877_init);
-
-static void __exit max9877_exit(void)
-{
-	i2c_del_driver(&max9877_i2c_driver);
-}
-module_exit(max9877_exit);
+module_i2c_driver(max9877_i2c_driver);
 
 MODULE_DESCRIPTION("ASoC MAX9877 amp driver");
 MODULE_AUTHOR("Joonyoung Shim <jy0922.shim@samsung.com>");

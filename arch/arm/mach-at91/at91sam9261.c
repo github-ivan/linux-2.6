@@ -12,11 +12,14 @@
 
 #include <linux/module.h>
 
+#include <asm/proc-fns.h>
 #include <asm/irq.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
+#include <asm/system_misc.h>
 #include <mach/cpu.h>
 #include <mach/at91sam9261.h>
+#include <mach/at91_aic.h>
 #include <mach/at91_pmc.h>
 #include <mach/at91_rstc.h>
 
@@ -175,6 +178,8 @@ static struct clk_lookup periph_clocks_lookups[] = {
 	CLKDEV_CON_DEV_ID("pclk", "ssc.1", &ssc1_clk),
 	CLKDEV_CON_DEV_ID("pclk", "ssc.2", &ssc2_clk),
 	CLKDEV_CON_DEV_ID("hclk", "at91_ohci", &hck0),
+	CLKDEV_CON_DEV_ID(NULL, "i2c-at91sam9261.0", &twi_clk),
+	CLKDEV_CON_DEV_ID(NULL, "i2c-at91sam9g10.0", &twi_clk),
 	CLKDEV_CON_ID("pioA", &pioA_clk),
 	CLKDEV_CON_ID("pioB", &pioB_clk),
 	CLKDEV_CON_ID("pioC", &pioC_clk),
@@ -237,18 +242,6 @@ static void __init at91sam9261_register_clocks(void)
 	clk_register(&hck1);
 }
 
-static struct clk_lookup console_clock_lookup;
-
-void __init at91sam9261_set_console_clock(int id)
-{
-	if (id >= ARRAY_SIZE(usart_clocks_lookups))
-		return;
-
-	console_clock_lookup.con_id = "usart";
-	console_clock_lookup.clk = usart_clocks_lookups[id].clk;
-	clkdev_add(&console_clock_lookup);
-}
-
 /* --------------------------------------------------------------------
  *  GPIO
  * -------------------------------------------------------------------- */
@@ -282,12 +275,15 @@ static void __init at91sam9261_ioremap_registers(void)
 {
 	at91_ioremap_shdwc(AT91SAM9261_BASE_SHDWC);
 	at91_ioremap_rstc(AT91SAM9261_BASE_RSTC);
+	at91_ioremap_ramc(0, AT91SAM9261_BASE_SDRAMC, 512);
 	at91sam926x_ioremap_pit(AT91SAM9261_BASE_PIT);
 	at91sam9_ioremap_smc(0, AT91SAM9261_BASE_SMC);
+	at91_ioremap_matrix(AT91SAM9261_BASE_MATRIX);
 }
 
 static void __init at91sam9261_initialize(void)
 {
+	arm_pm_idle = at91sam9_idle;
 	arm_pm_restart = at91sam9_alt_restart;
 	at91_extern_irq = (1 << AT91SAM9261_ID_IRQ0) | (1 << AT91SAM9261_ID_IRQ1)
 			| (1 << AT91SAM9261_ID_IRQ2);

@@ -34,19 +34,19 @@ struct machdep_calls {
 	char		*name;
 #ifdef CONFIG_PPC64
 	void            (*hpte_invalidate)(unsigned long slot,
-					   unsigned long va,
+					   unsigned long vpn,
 					   int psize, int ssize,
 					   int local);
 	long		(*hpte_updatepp)(unsigned long slot, 
 					 unsigned long newpp, 
-					 unsigned long va,
+					 unsigned long vpn,
 					 int psize, int ssize,
 					 int local);
 	void            (*hpte_updateboltedpp)(unsigned long newpp, 
 					       unsigned long ea,
 					       int psize, int ssize);
 	long		(*hpte_insert)(unsigned long hpte_group,
-				       unsigned long va,
+				       unsigned long vpn,
 				       unsigned long prpn,
 				       unsigned long rflags,
 				       unsigned long vflags,
@@ -99,9 +99,7 @@ struct machdep_calls {
 
 	void		(*init_IRQ)(void);
 
-	/* Return an irq, or NO_IRQ to indicate there are none pending.
-	 * If for some reason there is no irq, but the interrupt
-	 * shouldn't be counted as spurious, return NO_IRQ_IGNORE. */
+	/* Return an irq, or NO_IRQ to indicate there are none pending. */
 	unsigned int	(*get_irq)(void);
 
 	/* PCI stuff */
@@ -182,7 +180,8 @@ struct machdep_calls {
 	void		(*enable_pmcs)(void);
 
 	/* Set DABR for this platform, leave empty for default implemenation */
-	int		(*set_dabr)(unsigned long dabr);
+	int		(*set_dabr)(unsigned long dabr,
+				    unsigned long dabrx);
 
 #ifdef CONFIG_PPC32	/* XXX for now */
 	/* A general init function, called by ppc_init in init/main.c.
@@ -215,6 +214,9 @@ struct machdep_calls {
 
 	/* Called after scan and before resource survey */
 	void (*pcibios_fixup_phb)(struct pci_controller *hose);
+
+	/* Called during PCI resource reassignment */
+	resource_size_t (*pcibios_window_alignment)(struct pci_bus *, unsigned long type);
 
 	/* Called to shutdown machine specific hardware not already controlled
 	 * by other drivers.

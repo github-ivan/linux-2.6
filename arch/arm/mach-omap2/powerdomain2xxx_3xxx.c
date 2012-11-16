@@ -15,6 +15,7 @@
 #include <linux/io.h>
 #include <linux/errno.h>
 #include <linux/delay.h>
+#include <linux/bug.h>
 
 #include <plat/prcm.h>
 
@@ -121,8 +122,8 @@ static int omap2_pwrdm_wait_transition(struct powerdomain *pwrdm)
 			udelay(1);
 
 	if (c > PWRDM_TRANSITION_BAILOUT) {
-		printk(KERN_ERR "powerdomain: waited too long for "
-			"powerdomain %s to complete transition\n", pwrdm->name);
+		pr_err("powerdomain: %s: waited too long to complete transition\n",
+		       pwrdm->name);
 		return -EAGAIN;
 	}
 

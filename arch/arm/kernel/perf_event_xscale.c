@@ -248,19 +248,20 @@ xscale1pmu_handle_irq(int irq_num, void *dev)
 
 	regs = get_irq_regs();
 
-	perf_sample_data_init(&data, 0);
-
 	cpuc = &__get_cpu_var(cpu_hw_events);
 	for (idx = 0; idx < cpu_pmu->num_events; ++idx) {
 		struct perf_event *event = cpuc->events[idx];
 		struct hw_perf_event *hwc;
 
+		if (!event)
+			continue;
+
 		if (!xscale1_pmnc_counter_has_overflowed(pmnc, idx))
 			continue;
 
 		hwc = &event->hw;
-		armpmu_event_update(event, hwc, idx, 1);
-		data.period = event->hw.last_period;
+		armpmu_event_update(event, hwc, idx);
+		perf_sample_data_init(&data, 0, hwc->last_period);
 		if (!armpmu_event_set_period(event, hwc, idx))
 			continue;
 
@@ -429,12 +430,11 @@ xscale1pmu_write_counter(int counter, u32 val)
 
 static int xscale_map_event(struct perf_event *event)
 {
-	return map_cpu_event(event, &xscale_perf_map,
+	return armpmu_map_event(event, &xscale_perf_map,
 				&xscale_perf_cache_map, 0xFF);
 }
 
 static struct arm_pmu xscale1pmu = {
-	.id		= ARM_PERF_PMU_ID_XSCALE1,
 	.name		= "xscale1",
 	.handle_irq	= xscale1pmu_handle_irq,
 	.enable		= xscale1pmu_enable_event,
@@ -449,7 +449,7 @@ static struct arm_pmu xscale1pmu = {
 	.max_period	= (1LLU << 32) - 1,
 };
 
-static struct arm_pmu *__init xscale1pmu_init(void)
+static struct arm_pmu *__devinit xscale1pmu_init(void)
 {
 	return &xscale1pmu;
 }
@@ -585,19 +585,20 @@ xscale2pmu_handle_irq(int irq_num, void *dev)
 
 	regs = get_irq_regs();
 
-	perf_sample_data_init(&data, 0);
-
 	cpuc = &__get_cpu_var(cpu_hw_events);
 	for (idx = 0; idx < cpu_pmu->num_events; ++idx) {
 		struct perf_event *event = cpuc->events[idx];
 		struct hw_perf_event *hwc;
 
-		if (!xscale2_pmnc_counter_has_overflowed(pmnc, idx))
+		if (!event)
+			continue;
+
+		if (!xscale2_pmnc_counter_has_overflowed(of_flags, idx))
 			continue;
 
 		hwc = &event->hw;
-		armpmu_event_update(event, hwc, idx, 1);
-		data.period = event->hw.last_period;
+		armpmu_event_update(event, hwc, idx);
+		perf_sample_data_init(&data, 0, hwc->last_period);
 		if (!armpmu_event_set_period(event, hwc, idx))
 			continue;
 
@@ -663,7 +664,7 @@ xscale2pmu_enable_event(struct hw_perf_event *hwc, int idx)
 static void
 xscale2pmu_disable_event(struct hw_perf_event *hwc, int idx)
 {
-	unsigned long flags, ien, evtsel;
+	unsigned long flags, ien, evtsel, of_flags;
 	struct pmu_hw_events *events = cpu_pmu->get_hw_events();
 
 	ien = xscale2pmu_read_int_enable();
@@ -672,26 +673,31 @@ xscale2pmu_disable_event(struct hw_perf_event *hwc, int idx)
 	switch (idx) {
 	case XSCALE_CYCLE_COUNTER:
 		ien &= ~XSCALE2_CCOUNT_INT_EN;
+		of_flags = XSCALE2_CCOUNT_OVERFLOW;
 		break;
 	case XSCALE_COUNTER0:
 		ien &= ~XSCALE2_COUNT0_INT_EN;
 		evtsel &= ~XSCALE2_COUNT0_EVT_MASK;
 		evtsel |= XSCALE_PERFCTR_UNUSED << XSCALE2_COUNT0_EVT_SHFT;
+		of_flags = XSCALE2_COUNT0_OVERFLOW;
 		break;
 	case XSCALE_COUNTER1:
 		ien &= ~XSCALE2_COUNT1_INT_EN;
 		evtsel &= ~XSCALE2_COUNT1_EVT_MASK;
 		evtsel |= XSCALE_PERFCTR_UNUSED << XSCALE2_COUNT1_EVT_SHFT;
+		of_flags = XSCALE2_COUNT1_OVERFLOW;
 		break;
 	case XSCALE_COUNTER2:
 		ien &= ~XSCALE2_COUNT2_INT_EN;
 		evtsel &= ~XSCALE2_COUNT2_EVT_MASK;
 		evtsel |= XSCALE_PERFCTR_UNUSED << XSCALE2_COUNT2_EVT_SHFT;
+		of_flags = XSCALE2_COUNT2_OVERFLOW;
 		break;
 	case XSCALE_COUNTER3:
 		ien &= ~XSCALE2_COUNT3_INT_EN;
 		evtsel &= ~XSCALE2_COUNT3_EVT_MASK;
 		evtsel |= XSCALE_PERFCTR_UNUSED << XSCALE2_COUNT3_EVT_SHFT;
+		of_flags = XSCALE2_COUNT3_OVERFLOW;
 		break;
 	default:
 		WARN_ONCE(1, "invalid counter number (%d)\n", idx);
@@ -701,6 +707,7 @@ xscale2pmu_disable_event(struct hw_perf_event *hwc, int idx)
 	raw_spin_lock_irqsave(&events->pmu_lock, flags);
 	xscale2pmu_write_event_select(evtsel);
 	xscale2pmu_write_int_enable(ien);
+	xscale2pmu_write_overflow_flags(of_flags);
 	raw_spin_unlock_irqrestore(&events->pmu_lock, flags);
 }
 
@@ -795,7 +802,6 @@ xscale2pmu_write_counter(int counter, u32 val)
 }
 
 static struct arm_pmu xscale2pmu = {
-	.id		= ARM_PERF_PMU_ID_XSCALE2,
 	.name		= "xscale2",
 	.handle_irq	= xscale2pmu_handle_irq,
 	.enable		= xscale2pmu_enable_event,
@@ -810,17 +816,17 @@ static struct arm_pmu xscale2pmu = {
 	.max_period	= (1LLU << 32) - 1,
 };
 
-static struct arm_pmu *__init xscale2pmu_init(void)
+static struct arm_pmu *__devinit xscale2pmu_init(void)
 {
 	return &xscale2pmu;
 }
 #else
-static struct arm_pmu *__init xscale1pmu_init(void)
+static struct arm_pmu *__devinit xscale1pmu_init(void)
 {
 	return NULL;
 }
 
-static struct arm_pmu *__init xscale2pmu_init(void)
+static struct arm_pmu *__devinit xscale2pmu_init(void)
 {
 	return NULL;
 }

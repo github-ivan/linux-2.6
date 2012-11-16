@@ -1,7 +1,7 @@
 /*
  * USB Serial Converter stuff
  *
- *	Copyright (C) 1999 - 2005
+ *	Copyright (C) 1999 - 2012
  *	    Greg Kroah-Hartman (greg@kroah.com)
  *
  *	This program is free software; you can redistribute it and/or modify
@@ -27,13 +27,6 @@
 
 /* parity check flag */
 #define RELEVANT_IFLAG(iflag)	(iflag & (IGNBRK|BRKINT|IGNPAR|PARMRK|INPCK))
-
-enum port_dev_state {
-	PORT_UNREGISTERED,
-	PORT_REGISTERING,
-	PORT_REGISTERED,
-	PORT_UNREGISTERING,
-};
 
 /* USB serial flags */
 #define USB_SERIAL_WRITE_BUSY	0
@@ -124,7 +117,6 @@ struct usb_serial_port {
 	char			throttle_req;
 	unsigned long		sysrq; /* sysrq timeout */
 	struct device		dev;
-	enum port_dev_state	dev_state;
 };
 #define to_usb_serial_port(d) container_of(d, struct usb_serial_port, dev)
 
@@ -257,6 +249,7 @@ struct usb_serial_driver {
 
 	int (*suspend)(struct usb_serial *serial, pm_message_t message);
 	int (*resume)(struct usb_serial *serial);
+	int (*reset_resume)(struct usb_serial *serial);
 
 	/* serial function calls */
 	/* Called by console and by the tty layer */
@@ -300,28 +293,21 @@ struct usb_serial_driver {
 #define to_usb_serial_driver(d) \
 	container_of(d, struct usb_serial_driver, driver)
 
-extern int  usb_serial_register(struct usb_serial_driver *driver);
-extern void usb_serial_deregister(struct usb_serial_driver *driver);
+extern int usb_serial_register_drivers(struct usb_serial_driver *const serial_drivers[],
+		const char *name, const struct usb_device_id *id_table);
+extern void usb_serial_deregister_drivers(struct usb_serial_driver *const serial_drivers[]);
 extern void usb_serial_port_softint(struct usb_serial_port *port);
-
-extern int usb_serial_probe(struct usb_interface *iface,
-			    const struct usb_device_id *id);
-extern void usb_serial_disconnect(struct usb_interface *iface);
 
 extern int usb_serial_suspend(struct usb_interface *intf, pm_message_t message);
 extern int usb_serial_resume(struct usb_interface *intf);
 
-extern int ezusb_writememory(struct usb_serial *serial, int address,
-			     unsigned char *data, int length, __u8 bRequest);
-extern int ezusb_set_reset(struct usb_serial *serial, unsigned char reset_bit);
-
 /* USB Serial console functions */
 #ifdef CONFIG_USB_SERIAL_CONSOLE
-extern void usb_serial_console_init(int debug, int minor);
+extern void usb_serial_console_init(int minor);
 extern void usb_serial_console_exit(void);
 extern void usb_serial_console_disconnect(struct usb_serial *serial);
 #else
-static inline void usb_serial_console_init(int debug, int minor) { }
+static inline void usb_serial_console_init(int minor) { }
 static inline void usb_serial_console_exit(void) { }
 static inline void usb_serial_console_disconnect(struct usb_serial *serial) {}
 #endif
@@ -343,7 +329,7 @@ extern void usb_serial_generic_throttle(struct tty_struct *tty);
 extern void usb_serial_generic_unthrottle(struct tty_struct *tty);
 extern void usb_serial_generic_disconnect(struct usb_serial *serial);
 extern void usb_serial_generic_release(struct usb_serial *serial);
-extern int usb_serial_generic_register(int debug);
+extern int usb_serial_generic_register(void);
 extern void usb_serial_generic_deregister(void);
 extern int usb_serial_generic_submit_read_urbs(struct usb_serial_port *port,
 						 gfp_t mem_flags);
@@ -365,29 +351,55 @@ extern struct usb_serial_driver usb_serial_generic_device;
 extern struct bus_type usb_serial_bus_type;
 extern struct tty_driver *usb_serial_tty_driver;
 
-static inline void usb_serial_debug_data(int debug,
-					 struct device *dev,
+static inline void usb_serial_debug_data(struct device *dev,
 					 const char *function, int size,
 					 const unsigned char *data)
 {
-	int i;
-
-	if (debug) {
-		dev_printk(KERN_DEBUG, dev, "%s - length = %d, data = ",
-			   function, size);
-		for (i = 0; i < size; ++i)
-			printk("%.2x ", data[i]);
-		printk("\n");
-	}
+	dev_dbg(dev, "%s - length = %d, data = %*ph\n",
+		function, size, size, data);
 }
 
-/* Use our own dbg macro */
-#undef dbg
-#define dbg(format, arg...)						\
+/*
+ * Macro for reporting errors in write path to avoid inifinite loop
+ * when port is used as a console.
+ */
+#define dev_err_console(usport, fmt, ...)				\
 do {									\
-	if (debug)							\
-		printk(KERN_DEBUG "%s: " format "\n", __FILE__, ##arg);	\
+	static bool __print_once;					\
+	struct usb_serial_port *__port = (usport);			\
+									\
+	if (!__port->port.console || !__print_once) {			\
+		__print_once = true;					\
+		dev_err(&__port->dev, fmt, ##__VA_ARGS__);		\
+	}								\
 } while (0)
+
+/*
+ * module_usb_serial_driver() - Helper macro for registering a USB Serial driver
+ * @__serial_drivers: list of usb_serial drivers to register
+ * @__ids: all device ids that @__serial_drivers bind to
+ *
+ * Helper macro for USB serial drivers which do not do anything special
+ * in module init/exit. This eliminates a lot of boilerplate. Each
+ * module may only use this macro once, and calling it replaces
+ * module_init() and module_exit()
+ *
+ */
+#define usb_serial_module_driver(__name, __serial_drivers, __ids)	\
+static int __init usb_serial_module_init(void)				\
+{									\
+	return usb_serial_register_drivers(__serial_drivers,		\
+					   __name, __ids);		\
+}									\
+module_init(usb_serial_module_init);					\
+static void __exit usb_serial_module_exit(void)				\
+{									\
+	usb_serial_deregister_drivers(__serial_drivers);		\
+}									\
+module_exit(usb_serial_module_exit);
+
+#define module_usb_serial_driver(__serial_drivers, __ids)		\
+	usb_serial_module_driver(KBUILD_MODNAME, __serial_drivers, __ids)
 
 #endif /* __LINUX_USB_SERIAL_H */
 

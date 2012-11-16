@@ -27,16 +27,31 @@
 #include <linux/io.h>
 #include <linux/gpio.h>
 #include <linux/dma-mapping.h>
+#include <linux/regulator/fixed.h>
+#include <linux/regulator/machine.h>
 #include <linux/smsc911x.h>
+#include <linux/mmc/sh_mobile_sdhi.h>
+#include <linux/mfd/tmio.h>
 #include <mach/hardware.h>
 #include <mach/r8a7779.h>
 #include <mach/common.h>
+#include <mach/irqs.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-#include <asm/mach/map.h>
-#include <asm/mach/time.h>
 #include <asm/hardware/gic.h>
 #include <asm/traps.h>
+
+/* Fixed 3.3V regulator to be used by SDHI0 */
+static struct regulator_consumer_supply fixed3v3_power_consumers[] = {
+	REGULATOR_SUPPLY("vmmc", "sh_mobile_sdhi.0"),
+	REGULATOR_SUPPLY("vqmmc", "sh_mobile_sdhi.0"),
+};
+
+/* Dummy supplies, where voltage doesn't matter */
+static struct regulator_consumer_supply dummy_supplies[] = {
+	REGULATOR_SUPPLY("vddvario", "smsc911x"),
+	REGULATOR_SUPPLY("vdd33a", "smsc911x"),
+};
 
 /* SMSC LAN89218 */
 static struct resource smsc911x_resources[] = {
@@ -60,7 +75,7 @@ static struct smsc911x_platform_config smsc911x_platdata = {
 
 static struct platform_device eth_device = {
 	.name		= "smsc911x",
-	.id		= 0,
+	.id		= -1,
 	.dev  = {
 		.platform_data = &smsc911x_platdata,
 	},
@@ -68,55 +83,62 @@ static struct platform_device eth_device = {
 	.num_resources	= ARRAY_SIZE(smsc911x_resources),
 };
 
+static struct resource sdhi0_resources[] = {
+	[0] = {
+		.name	= "sdhi0",
+		.start	= 0xffe4c000,
+		.end	= 0xffe4c0ff,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= gic_spi(104),
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct sh_mobile_sdhi_info sdhi0_platform_data = {
+	.tmio_flags = TMIO_MMC_WRPROTECT_DISABLE | TMIO_MMC_HAS_IDLE_WAIT,
+	.tmio_caps = MMC_CAP_SD_HIGHSPEED,
+};
+
+static struct platform_device sdhi0_device = {
+	.name = "sh_mobile_sdhi",
+	.num_resources = ARRAY_SIZE(sdhi0_resources),
+	.resource = sdhi0_resources,
+	.id = 0,
+	.dev = {
+		.platform_data = &sdhi0_platform_data,
+	}
+};
+
+/* Thermal */
+static struct resource thermal_resources[] = {
+	[0] = {
+		.start		= 0xFFC48000,
+		.end		= 0xFFC48038 - 1,
+		.flags		= IORESOURCE_MEM,
+	},
+};
+
+static struct platform_device thermal_device = {
+	.name		= "rcar_thermal",
+	.resource	= thermal_resources,
+	.num_resources	= ARRAY_SIZE(thermal_resources),
+};
+
 static struct platform_device *marzen_devices[] __initdata = {
 	&eth_device,
+	&sdhi0_device,
+	&thermal_device,
 };
-
-static struct map_desc marzen_io_desc[] __initdata = {
-	/* 2M entity map for 0xf0000000 (MPCORE) */
-	{
-		.virtual	= 0xf0000000,
-		.pfn		= __phys_to_pfn(0xf0000000),
-		.length		= SZ_2M,
-		.type		= MT_DEVICE_NONSHARED
-	},
-	/* 16M entity map for 0xfexxxxxx (DMAC-S/HPBREG/INTC2/LRAM/DBSC) */
-	{
-		.virtual	= 0xfe000000,
-		.pfn		= __phys_to_pfn(0xfe000000),
-		.length		= SZ_16M,
-		.type		= MT_DEVICE_NONSHARED
-	},
-};
-
-static void __init marzen_map_io(void)
-{
-	iotable_init(marzen_io_desc, ARRAY_SIZE(marzen_io_desc));
-}
-
-static void __init marzen_init_early(void)
-{
-	r8a7779_add_early_devices();
-
-	/* Early serial console setup is not included here due to
-	 * memory map collisions. The SCIF serial ports in r8a7779
-	 * are difficult to entity map 1:1 due to collision with the
-	 * virtual memory range used by the coherent DMA code on ARM.
-	 *
-	 * Anyone wanting to debug early can remove UPF_IOREMAP from
-	 * the sh-sci serial console platform data, adjust mapbase
-	 * to a static M:N virt:phys mapping that needs to be added to
-	 * the mappings passed with iotable_init() above.
-	 *
-	 * Then add a call to shmobile_setup_console() from this function.
-	 *
-	 * As a final step pass earlyprint=sh-sci.2,115200 on the kernel
-	 * command line.
-	 */
-}
 
 static void __init marzen_init(void)
 {
+	regulator_register_always_on(0, "fixed-3.3V", fixed3v3_power_consumers,
+				ARRAY_SIZE(fixed3v3_power_consumers), 3300000);
+	regulator_register_fixed(1, dummy_supplies,
+				ARRAY_SIZE(dummy_supplies));
+
 	r8a7779_pinmux_init();
 
 	/* SCIF2 (CN18: DEBUG0) */
@@ -131,27 +153,28 @@ static void __init marzen_init(void)
 	gpio_request(GPIO_FN_EX_CS0, NULL); /* nCS */
 	gpio_request(GPIO_FN_IRQ1_B, NULL); /* IRQ + PME */
 
+	/* SD0 (CN20) */
+	gpio_request(GPIO_FN_SD0_CLK, NULL);
+	gpio_request(GPIO_FN_SD0_CMD, NULL);
+	gpio_request(GPIO_FN_SD0_DAT0, NULL);
+	gpio_request(GPIO_FN_SD0_DAT1, NULL);
+	gpio_request(GPIO_FN_SD0_DAT2, NULL);
+	gpio_request(GPIO_FN_SD0_DAT3, NULL);
+	gpio_request(GPIO_FN_SD0_CD, NULL);
+	gpio_request(GPIO_FN_SD0_WP, NULL);
+
 	r8a7779_add_standard_devices();
 	platform_add_devices(marzen_devices, ARRAY_SIZE(marzen_devices));
 }
 
-static void __init marzen_timer_init(void)
-{
-	r8a7779_clock_init();
-	shmobile_timer.init();
-	return;
-}
-
-struct sys_timer marzen_timer = {
-	.init	= marzen_timer_init,
-};
-
 MACHINE_START(MARZEN, "marzen")
-	.map_io		= marzen_map_io,
-	.init_early	= marzen_init_early,
+	.smp		= smp_ops(r8a7779_smp_ops),
+	.map_io		= r8a7779_map_io,
+	.init_early	= r8a7779_add_early_devices,
 	.nr_irqs	= NR_IRQS_LEGACY,
 	.init_irq	= r8a7779_init_irq,
 	.handle_irq	= gic_handle_irq,
 	.init_machine	= marzen_init,
-	.timer		= &marzen_timer,
+	.init_late	= shmobile_init_late,
+	.timer		= &shmobile_timer,
 MACHINE_END

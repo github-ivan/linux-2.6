@@ -24,6 +24,7 @@
 
 #include <plat/clock.h>
 
+#include "soc.h"
 #include "clock.h"
 #include "clock2xxx.h"
 #include "cm.h"

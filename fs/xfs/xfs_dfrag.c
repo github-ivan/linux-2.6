@@ -18,9 +18,7 @@
 #include "xfs.h"
 #include "xfs_fs.h"
 #include "xfs_types.h"
-#include "xfs_bit.h"
 #include "xfs_log.h"
-#include "xfs_inum.h"
 #include "xfs_trans.h"
 #include "xfs_sb.h"
 #include "xfs_ag.h"
@@ -50,44 +48,44 @@ xfs_swapext(
 	xfs_swapext_t	*sxp)
 {
 	xfs_inode_t     *ip, *tip;
-	struct file	*file, *tmp_file;
+	struct fd	f, tmp;
 	int		error = 0;
 
 	/* Pull information for the target fd */
-	file = fget((int)sxp->sx_fdtarget);
-	if (!file) {
+	f = fdget((int)sxp->sx_fdtarget);
+	if (!f.file) {
 		error = XFS_ERROR(EINVAL);
 		goto out;
 	}
 
-	if (!(file->f_mode & FMODE_WRITE) ||
-	    !(file->f_mode & FMODE_READ) ||
-	    (file->f_flags & O_APPEND)) {
+	if (!(f.file->f_mode & FMODE_WRITE) ||
+	    !(f.file->f_mode & FMODE_READ) ||
+	    (f.file->f_flags & O_APPEND)) {
 		error = XFS_ERROR(EBADF);
 		goto out_put_file;
 	}
 
-	tmp_file = fget((int)sxp->sx_fdtmp);
-	if (!tmp_file) {
+	tmp = fdget((int)sxp->sx_fdtmp);
+	if (!tmp.file) {
 		error = XFS_ERROR(EINVAL);
 		goto out_put_file;
 	}
 
-	if (!(tmp_file->f_mode & FMODE_WRITE) ||
-	    !(tmp_file->f_mode & FMODE_READ) ||
-	    (tmp_file->f_flags & O_APPEND)) {
+	if (!(tmp.file->f_mode & FMODE_WRITE) ||
+	    !(tmp.file->f_mode & FMODE_READ) ||
+	    (tmp.file->f_flags & O_APPEND)) {
 		error = XFS_ERROR(EBADF);
 		goto out_put_tmp_file;
 	}
 
-	if (IS_SWAPFILE(file->f_path.dentry->d_inode) ||
-	    IS_SWAPFILE(tmp_file->f_path.dentry->d_inode)) {
+	if (IS_SWAPFILE(f.file->f_path.dentry->d_inode) ||
+	    IS_SWAPFILE(tmp.file->f_path.dentry->d_inode)) {
 		error = XFS_ERROR(EINVAL);
 		goto out_put_tmp_file;
 	}
 
-	ip = XFS_I(file->f_path.dentry->d_inode);
-	tip = XFS_I(tmp_file->f_path.dentry->d_inode);
+	ip = XFS_I(f.file->f_path.dentry->d_inode);
+	tip = XFS_I(tmp.file->f_path.dentry->d_inode);
 
 	if (ip->i_mount != tip->i_mount) {
 		error = XFS_ERROR(EINVAL);
@@ -107,9 +105,9 @@ xfs_swapext(
 	error = xfs_swap_extents(ip, tip, sxp);
 
  out_put_tmp_file:
-	fput(tmp_file);
+	fdput(tmp);
  out_put_file:
-	fput(file);
+	fdput(f);
  out:
 	return error;
 }
@@ -215,7 +213,7 @@ xfs_swap_extents(
 	xfs_trans_t	*tp;
 	xfs_bstat_t	*sbp = &sxp->sx_stat;
 	xfs_ifork_t	*tempifp, *ifp, *tifp;
-	int		ilf_fields, tilf_fields;
+	int		src_log_flags, target_log_flags;
 	int		error = 0;
 	int		aforkblks = 0;
 	int		taforkblks = 0;
@@ -385,9 +383,8 @@ xfs_swap_extents(
 	tip->i_delayed_blks = ip->i_delayed_blks;
 	ip->i_delayed_blks = 0;
 
-	ilf_fields = XFS_ILOG_CORE;
-
-	switch(ip->i_d.di_format) {
+	src_log_flags = XFS_ILOG_CORE;
+	switch (ip->i_d.di_format) {
 	case XFS_DINODE_FMT_EXTENTS:
 		/* If the extents fit in the inode, fix the
 		 * pointer.  Otherwise it's already NULL or
@@ -397,16 +394,15 @@ xfs_swap_extents(
 			ifp->if_u1.if_extents =
 				ifp->if_u2.if_inline_ext;
 		}
-		ilf_fields |= XFS_ILOG_DEXT;
+		src_log_flags |= XFS_ILOG_DEXT;
 		break;
 	case XFS_DINODE_FMT_BTREE:
-		ilf_fields |= XFS_ILOG_DBROOT;
+		src_log_flags |= XFS_ILOG_DBROOT;
 		break;
 	}
 
-	tilf_fields = XFS_ILOG_CORE;
-
-	switch(tip->i_d.di_format) {
+	target_log_flags = XFS_ILOG_CORE;
+	switch (tip->i_d.di_format) {
 	case XFS_DINODE_FMT_EXTENTS:
 		/* If the extents fit in the inode, fix the
 		 * pointer.  Otherwise it's already NULL or
@@ -416,10 +412,10 @@ xfs_swap_extents(
 			tifp->if_u1.if_extents =
 				tifp->if_u2.if_inline_ext;
 		}
-		tilf_fields |= XFS_ILOG_DEXT;
+		target_log_flags |= XFS_ILOG_DEXT;
 		break;
 	case XFS_DINODE_FMT_BTREE:
-		tilf_fields |= XFS_ILOG_DBROOT;
+		target_log_flags |= XFS_ILOG_DBROOT;
 		break;
 	}
 
@@ -427,8 +423,8 @@ xfs_swap_extents(
 	xfs_trans_ijoin(tp, ip, XFS_ILOCK_EXCL | XFS_IOLOCK_EXCL);
 	xfs_trans_ijoin(tp, tip, XFS_ILOCK_EXCL | XFS_IOLOCK_EXCL);
 
-	xfs_trans_log_inode(tp, ip,  ilf_fields);
-	xfs_trans_log_inode(tp, tip, tilf_fields);
+	xfs_trans_log_inode(tp, ip,  src_log_flags);
+	xfs_trans_log_inode(tp, tip, target_log_flags);
 
 	/*
 	 * If this is a synchronous mount, make sure that the

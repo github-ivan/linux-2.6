@@ -36,6 +36,7 @@
 #include <linux/platform_device.h>
 #include <linux/math64.h>
 #include <linux/time.h>
+#include <linux/err.h>
 
 #define REFRESH_INTERVAL	(HZ)
 #define IPMI_TIMEOUT		(30 * HZ)
@@ -1045,7 +1046,7 @@ static struct aem_ro_sensor_template aem2_ro_sensors[] = {
 {"power6_average",	  aem2_show_pcap_value,	POWER_CAP_MIN_WARNING},
 {"power7_average",	  aem2_show_pcap_value,	POWER_CAP_MIN},
 
-{"power3_average", 	  aem2_show_pcap_value,	POWER_AUX},
+{"power3_average",	  aem2_show_pcap_value,	POWER_AUX},
 {"power_cap",		  aem2_show_pcap_value,	POWER_CAP},
 {NULL,                    NULL,                 0},
 };

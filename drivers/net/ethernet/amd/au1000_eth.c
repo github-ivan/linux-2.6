@@ -725,7 +725,7 @@ static int au1000_rx(struct net_device *dev)
 			/* good frame */
 			frmlen = (status & RX_FRAME_LEN_MASK);
 			frmlen -= 4; /* Remove FCS */
-			skb = dev_alloc_skb(frmlen + 2);
+			skb = netdev_alloc_skb(dev, frmlen + 2);
 			if (skb == NULL) {
 				netdev_err(dev, "Memory squeeze, dropping packet.\n");
 				dev->stats.rx_dropped++;
@@ -1077,7 +1077,6 @@ static int __devinit au1000_probe(struct platform_device *pdev)
 
 	dev = alloc_etherdev(sizeof(struct au1000_private));
 	if (!dev) {
-		dev_err(&pdev->dev, "alloc_etherdev failed\n");
 		err = -ENOMEM;
 		goto err_alloc;
 	}
@@ -1130,9 +1129,6 @@ static int __devinit au1000_probe(struct platform_device *pdev)
 
 	au1000_setup_hw_rings(aup, aup->macdma);
 
-	/* set a random MAC now in case platform_data doesn't provide one */
-	random_ether_addr(dev->dev_addr);
-
 	writel(0, aup->enable);
 	aup->mac_enabled = 0;
 
@@ -1142,8 +1138,12 @@ static int __devinit au1000_probe(struct platform_device *pdev)
 					" PHY search on MAC0\n");
 		aup->phy1_search_mac0 = 1;
 	} else {
-		if (is_valid_ether_addr(pd->mac))
+		if (is_valid_ether_addr(pd->mac)) {
 			memcpy(dev->dev_addr, pd->mac, 6);
+		} else {
+			/* Set a random MAC since no valid provided by platform_data. */
+			eth_hw_addr_random(dev);
+		}
 
 		aup->phy_static_config = pd->phy_static_config;
 		aup->phy_search_highest_addr = pd->phy_search_highest_addr;
@@ -1174,8 +1174,10 @@ static int __devinit au1000_probe(struct platform_device *pdev)
 	snprintf(aup->mii_bus->id, MII_BUS_ID_SIZE, "%s-%x",
 		pdev->name, aup->mac_id);
 	aup->mii_bus->irq = kmalloc(sizeof(int)*PHY_MAX_ADDR, GFP_KERNEL);
-	if (aup->mii_bus->irq == NULL)
+	if (aup->mii_bus->irq == NULL) {
+		err = -ENOMEM;
 		goto err_out;
+	}
 
 	for (i = 0; i < PHY_MAX_ADDR; ++i)
 		aup->mii_bus->irq[i] = PHY_POLL;
@@ -1190,7 +1192,8 @@ static int __devinit au1000_probe(struct platform_device *pdev)
 		goto err_mdiobus_reg;
 	}
 
-	if (au1000_mii_probe(dev) != 0)
+	err = au1000_mii_probe(dev);
+	if (err != 0)
 		goto err_out;
 
 	pDBfree = NULL;
@@ -1205,6 +1208,7 @@ static int __devinit au1000_probe(struct platform_device *pdev)
 	}
 	aup->pDBfree = pDBfree;
 
+	err = -ENODEV;
 	for (i = 0; i < NUM_RX_DMA; i++) {
 		pDB = au1000_GetFreeDB(aup);
 		if (!pDB)
@@ -1213,6 +1217,8 @@ static int __devinit au1000_probe(struct platform_device *pdev)
 		aup->rx_dma_ring[i]->buff_stat = (unsigned)pDB->dma_addr;
 		aup->rx_db_inuse[i] = pDB;
 	}
+
+	err = -ENODEV;
 	for (i = 0; i < NUM_TX_DMA; i++) {
 		pDB = au1000_GetFreeDB(aup);
 		if (!pDB)

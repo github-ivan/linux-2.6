@@ -1,27 +1,27 @@
 /*
-	ads7828.c - lm_sensors driver for ads7828 12-bit 8-channel ADC
-	(C) 2007 EADS Astrium
-
-	This driver is based on the lm75 and other lm_sensors/hwmon drivers
-
-	Written by Steve Hardy <shardy@redhat.com>
-
-	Datasheet available at: http://focus.ti.com/lit/ds/symlink/ads7828.pdf
-
-	This program is free software; you can redistribute it and/or modify
-	it under the terms of the GNU General Public License as published by
-	the Free Software Foundation; either version 2 of the License, or
-	(at your option) any later version.
-
-	This program is distributed in the hope that it will be useful,
-	but WITHOUT ANY WARRANTY; without even the implied warranty of
-	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	See the
-	GNU General Public License for more details.
-
-	You should have received a copy of the GNU General Public License
-	along with this program; if not, write to the Free Software
-	Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * ads7828.c - lm_sensors driver for ads7828 12-bit 8-channel ADC
+ * (C) 2007 EADS Astrium
+ *
+ * This driver is based on the lm75 and other lm_sensors/hwmon drivers
+ *
+ * Written by Steve Hardy <shardy@redhat.com>
+ *
+ * Datasheet available at: http://focus.ti.com/lit/ds/symlink/ads7828.pdf
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ */
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -154,7 +154,6 @@ static int ads7828_remove(struct i2c_client *client)
 	struct ads7828_data *data = i2c_get_clientdata(client);
 	hwmon_device_unregister(data->hwmon_dev);
 	sysfs_remove_group(&client->dev.kobj, &ads7828_group);
-	kfree(i2c_get_clientdata(client));
 	return 0;
 }
 
@@ -188,12 +187,13 @@ static int ads7828_detect(struct i2c_client *client,
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_READ_WORD_DATA))
 		return -ENODEV;
 
-	/* Now, we do the remaining detection. There is no identification
-	dedicated register so attempt to sanity check using knowledge of
-	the chip
-	- Read from the 8 channel addresses
-	- Check the top 4 bits of each result are not set (12 data bits)
-	*/
+	/*
+	 * Now, we do the remaining detection. There is no identification
+	 * dedicated register so attempt to sanity check using knowledge of
+	 * the chip
+	 * - Read from the 8 channel addresses
+	 * - Check the top 4 bits of each result are not set (12 data bits)
+	 */
 	for (ch = 0; ch < ADS7828_NCH; ch++) {
 		u16 in_data;
 		u8 cmd = channel_cmd_byte(ch);
@@ -216,11 +216,10 @@ static int ads7828_probe(struct i2c_client *client,
 	struct ads7828_data *data;
 	int err;
 
-	data = kzalloc(sizeof(struct ads7828_data), GFP_KERNEL);
-	if (!data) {
-		err = -ENOMEM;
-		goto exit;
-	}
+	data = devm_kzalloc(&client->dev, sizeof(struct ads7828_data),
+			    GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
 
 	i2c_set_clientdata(client, data);
 	mutex_init(&data->update_lock);
@@ -228,7 +227,7 @@ static int ads7828_probe(struct i2c_client *client,
 	/* Register sysfs hooks */
 	err = sysfs_create_group(&client->dev.kobj, &ads7828_group);
 	if (err)
-		goto exit_free;
+		return err;
 
 	data->hwmon_dev = hwmon_device_register(&client->dev);
 	if (IS_ERR(data->hwmon_dev)) {
@@ -240,9 +239,6 @@ static int ads7828_probe(struct i2c_client *client,
 
 exit_remove:
 	sysfs_remove_group(&client->dev.kobj, &ads7828_group);
-exit_free:
-	kfree(data);
-exit:
 	return err;
 }
 

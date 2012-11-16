@@ -46,11 +46,37 @@ struct devtable {
 	void *function;
 };
 
+#define ___cat(a,b) a ## b
+#define __cat(a,b) ___cat(a,b)
+
+/* we need some special handling for this host tool running eventually on
+ * Darwin. The Mach-O section handling is a bit different than ELF section
+ * handling. The differnces in detail are:
+ *  a) we have segments which have sections
+ *  b) we need a API call to get the respective section symbols */
+#if defined(__MACH__)
+#include <mach-o/getsect.h>
+
+#define INIT_SECTION(name)  do {					\
+		unsigned long name ## _len;				\
+		char *__cat(pstart_,name) = getsectdata("__TEXT",	\
+			#name, &__cat(name,_len));			\
+		char *__cat(pstop_,name) = __cat(pstart_,name) +	\
+			__cat(name, _len);				\
+		__cat(__start_,name) = (void *)__cat(pstart_,name);	\
+		__cat(__stop_,name) = (void *)__cat(pstop_,name);	\
+	} while (0)
+#define SECTION(name)   __attribute__((section("__TEXT, " #name)))
+
+struct devtable **__start___devtable, **__stop___devtable;
+#else
+#define INIT_SECTION(name) /* no-op for ELF */
+#define SECTION(name)   __attribute__((section(#name)))
+
 /* We construct a table of pointers in an ELF section (pointers generally
  * go unpadded by gcc).  ld creates boundary syms for us. */
 extern struct devtable *__start___devtable[], *__stop___devtable[];
-#define ___cat(a,b) a ## b
-#define __cat(a,b) ___cat(a,b)
+#endif /* __MACH__ */
 
 #if __GNUC__ == 3 && __GNUC_MINOR__ < 3
 # define __used			__attribute__((__unused__))
@@ -65,8 +91,8 @@ extern struct devtable *__start___devtable[], *__stop___devtable[];
 						(type *)NULL,		\
 						(char *)NULL)),		\
 		sizeof(type), (function) };				\
-	static struct devtable *__attribute__((section("__devtable"))) \
-		__used __cat(devtable_ptr,__LINE__) = &__cat(devtable,__LINE__)
+	static struct devtable *SECTION(__devtable) __used \
+		__cat(devtable_ptr,__LINE__) = &__cat(devtable,__LINE__)
 
 #define ADD(str, sep, cond, field)                              \
 do {                                                            \
@@ -130,7 +156,7 @@ static void device_id_check(const char *modname, const char *device_id,
 }
 
 /* USB is special because the bcdDevice can be matched against a numeric range */
-/* Looks like "usb:vNpNdNdcNdscNdpNicNiscNipN" */
+/* Looks like "usb:vNpNdNdcNdscNdpNicNiscNipNinN" */
 static void do_usb_entry(struct usb_device_id *id,
 			 unsigned int bcdDevice_initial, int bcdDevice_initial_digits,
 			 unsigned char range_lo, unsigned char range_hi,
@@ -184,6 +210,9 @@ static void do_usb_entry(struct usb_device_id *id,
 	ADD(alias, "ip",
 	    id->match_flags&USB_DEVICE_ID_MATCH_INT_PROTOCOL,
 	    id->bInterfaceProtocol);
+	ADD(alias, "in",
+	    id->match_flags&USB_DEVICE_ID_MATCH_INT_NUMBER,
+	    id->bInterfaceNumber);
 
 	add_wildcard(alias);
 	buf_printf(&mod->dev_table_buf,
@@ -310,10 +339,13 @@ static int do_hid_entry(const char *filename,
 			     struct hid_device_id *id, char *alias)
 {
 	id->bus = TO_NATIVE(id->bus);
+	id->group = TO_NATIVE(id->group);
 	id->vendor = TO_NATIVE(id->vendor);
 	id->product = TO_NATIVE(id->product);
 
-	sprintf(alias, "hid:b%04X", id->bus);
+	sprintf(alias, "hid:");
+	ADD(alias, "b", id->bus != HID_BUS_ANY, id->bus);
+	ADD(alias, "g", id->group != HID_GROUP_ANY, id->group);
 	ADD(alias, "v", id->vendor != HID_ANY_ID, id->vendor);
 	ADD(alias, "p", id->product != HID_ANY_ID, id->product);
 
@@ -934,6 +966,21 @@ static int do_isapnp_entry(const char *filename,
 }
 ADD_TO_DEVTABLE("isapnp", struct isapnp_device_id, do_isapnp_entry);
 
+/* Looks like: "ipack:fNvNdN". */
+static int do_ipack_entry(const char *filename,
+			  struct ipack_device_id *id, char *alias)
+{
+	id->vendor = TO_NATIVE(id->vendor);
+	id->device = TO_NATIVE(id->device);
+	strcpy(alias, "ipack:");
+	ADD(alias, "f", id->format != IPACK_ANY_FORMAT, id->format);
+	ADD(alias, "v", id->vendor != IPACK_ANY_ID, id->vendor);
+	ADD(alias, "d", id->device != IPACK_ANY_ID, id->device);
+	add_wildcard(alias);
+	return 1;
+}
+ADD_TO_DEVTABLE("ipack", struct ipack_device_id, do_ipack_entry);
+
 /*
  * Append a match expression for a single masked hex digit.
  * outp points to a pointer to the character at which to append.
@@ -1003,6 +1050,31 @@ static int do_amba_entry(const char *filename,
 }
 ADD_TO_DEVTABLE("amba", struct amba_id, do_amba_entry);
 
+/* LOOKS like x86cpu:vendor:VVVV:family:FFFF:model:MMMM:feature:*,FEAT,*
+ * All fields are numbers. It would be nicer to use strings for vendor
+ * and feature, but getting those out of the build system here is too
+ * complicated.
+ */
+
+static int do_x86cpu_entry(const char *filename, struct x86_cpu_id *id,
+			   char *alias)
+{
+	id->feature = TO_NATIVE(id->feature);
+	id->family = TO_NATIVE(id->family);
+	id->model = TO_NATIVE(id->model);
+	id->vendor = TO_NATIVE(id->vendor);
+
+	strcpy(alias, "x86cpu:");
+	ADD(alias, "vendor:",  id->vendor != X86_VENDOR_ANY, id->vendor);
+	ADD(alias, ":family:", id->family != X86_FAMILY_ANY, id->family);
+	ADD(alias, ":model:",  id->model  != X86_MODEL_ANY,  id->model);
+	strcat(alias, ":feature:*");
+	if (id->feature != X86_FEATURE_ANY)
+		sprintf(alias + strlen(alias), "%04X*", id->feature);
+	return 1;
+}
+ADD_TO_DEVTABLE("x86cpu", struct x86_cpu_id, do_x86cpu_entry);
+
 /* Does namelen bytes of name exactly match the symbol? */
 static bool sym_is(const char *name, unsigned namelen, const char *symbol)
 {
@@ -1049,6 +1121,10 @@ void handle_moddevtable(struct module *mod, struct elf_info *info,
 	if (!sym->st_shndx || get_secindex(info, sym) >= info->num_sections)
 		return;
 
+	/* We're looking for an object */
+	if (ELF_ST_TYPE(sym->st_info) != STT_OBJECT)
+		return;
+
 	/* All our symbols are of form <prefix>__mod_XXX_device_table. */
 	name = strstr(symname, "__mod_");
 	if (!name)
@@ -1080,6 +1156,7 @@ void handle_moddevtable(struct module *mod, struct elf_info *info,
 		do_pnp_card_entries(symval, sym->st_size, mod);
 	else {
 		struct devtable **p;
+		INIT_SECTION(__devtable);
 
 		for (p = __start___devtable; p < __stop___devtable; p++) {
 			if (sym_is(name, namelen, (*p)->device_id)) {

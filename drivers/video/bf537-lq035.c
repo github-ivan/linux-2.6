@@ -383,23 +383,19 @@ static int __devinit request_ports(void)
 	}
 
 #if (defined(UD) && defined(LBR))
-	if (gpio_request(UD, KBUILD_MODNAME)) {
+	if (gpio_request_one(UD, GPIOF_OUT_INIT_LOW, KBUILD_MODNAME)) {
 		pr_err("requesting GPIO %d failed\n", UD);
 		return -EBUSY;
 	}
 
-	if (gpio_request(LBR, KBUILD_MODNAME)) {
+	if (gpio_request_one(LBR, GPIOF_OUT_INIT_HIGH, KBUILD_MODNAME)) {
 		pr_err("requesting GPIO %d failed\n", LBR);
 		gpio_free(UD);
 		return -EBUSY;
 	}
-
-	gpio_direction_output(UD, 0);
-	gpio_direction_output(LBR, 1);
-
 #endif
 
-	if (gpio_request(MOD, KBUILD_MODNAME)) {
+	if (gpio_request_one(MOD, GPIOF_OUT_INIT_HIGH, KBUILD_MODNAME)) {
 		pr_err("requesting GPIO %d failed\n", MOD);
 #if (defined(UD) && defined(LBR))
 		gpio_free(LBR);
@@ -407,8 +403,6 @@ static int __devinit request_ports(void)
 #endif
 		return -EBUSY;
 	}
-
-	gpio_direction_output(MOD, 1);
 
 	SSYNC();
 	return 0;
@@ -766,18 +760,20 @@ static int __devinit bfin_lq035_probe(struct platform_device *pdev)
 	bfin_lq035_fb.flags = FBINFO_DEFAULT;
 
 
-	bfin_lq035_fb.pseudo_palette = kzalloc(sizeof(u32) * 16, GFP_KERNEL);
+	bfin_lq035_fb.pseudo_palette = devm_kzalloc(&pdev->dev,
+						    sizeof(u32) * 16,
+						    GFP_KERNEL);
 	if (bfin_lq035_fb.pseudo_palette == NULL) {
 		pr_err("failed to allocate pseudo_palette\n");
 		ret = -ENOMEM;
-		goto out_palette;
+		goto out_table;
 	}
 
 	if (fb_alloc_cmap(&bfin_lq035_fb.cmap, NBR_PALETTE, 0) < 0) {
 		pr_err("failed to allocate colormap (%d entries)\n",
 			NBR_PALETTE);
 		ret = -EFAULT;
-		goto out_cmap;
+		goto out_table;
 	}
 
 	if (register_framebuffer(&bfin_lq035_fb) < 0) {
@@ -810,9 +806,6 @@ out_lcd:
 	unregister_framebuffer(&bfin_lq035_fb);
 out_reg:
 	fb_dealloc_cmap(&bfin_lq035_fb.cmap);
-out_cmap:
-	kfree(bfin_lq035_fb.pseudo_palette);
-out_palette:
 out_table:
 	dma_free_coherent(NULL, TOTAL_VIDEO_MEM_SIZE, fb_buffer, 0);
 	fb_buffer = NULL;
@@ -840,7 +833,6 @@ static int __devexit bfin_lq035_remove(struct platform_device *pdev)
 	free_dma(CH_PPI);
 
 
-	kfree(bfin_lq035_fb.pseudo_palette);
 	fb_dealloc_cmap(&bfin_lq035_fb.cmap);
 
 

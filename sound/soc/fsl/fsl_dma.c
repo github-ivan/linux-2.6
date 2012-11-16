@@ -311,23 +311,23 @@ static int fsl_dma_new(struct snd_soc_pcm_runtime *rtd)
 	 * should allocate a DMA buffer only for the streams that are valid.
 	 */
 
-	if (pcm->streams[0].substream) {
+	if (pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream) {
 		ret = snd_dma_alloc_pages(SNDRV_DMA_TYPE_DEV, card->dev,
 			fsl_dma_hardware.buffer_bytes_max,
-			&pcm->streams[0].substream->dma_buffer);
+			&pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream->dma_buffer);
 		if (ret) {
 			dev_err(card->dev, "can't alloc playback dma buffer\n");
 			return ret;
 		}
 	}
 
-	if (pcm->streams[1].substream) {
+	if (pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream) {
 		ret = snd_dma_alloc_pages(SNDRV_DMA_TYPE_DEV, card->dev,
 			fsl_dma_hardware.buffer_bytes_max,
-			&pcm->streams[1].substream->dma_buffer);
+			&pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream->dma_buffer);
 		if (ret) {
 			dev_err(card->dev, "can't alloc capture dma buffer\n");
-			snd_dma_free_pages(&pcm->streams[0].substream->dma_buffer);
+			snd_dma_free_pages(&pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream->dma_buffer);
 			return ret;
 		}
 	}
@@ -822,12 +822,6 @@ static int fsl_dma_close(struct snd_pcm_substream *substream)
 	if (dma_private) {
 		if (dma_private->irq)
 			free_irq(dma_private->irq, dma_private);
-
-		if (dma_private->ld_buf_phys) {
-			dma_unmap_single(dev, dma_private->ld_buf_phys,
-					 sizeof(dma_private->link),
-					 DMA_TO_DEVICE);
-		}
 
 		/* Deallocate the fsl_dma_private structure */
 		dma_free_coherent(dev, sizeof(struct fsl_dma_private),

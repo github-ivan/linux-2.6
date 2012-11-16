@@ -16,6 +16,7 @@
 #include <linux/fb.h>
 #include <linux/backlight.h>
 #include <linux/lcd.h>
+#include <linux/of.h>
 #include <linux/slab.h>
 
 #include <video/platform_lcd.h>
@@ -121,9 +122,9 @@ static int __devexit platform_lcd_remove(struct platform_device *pdev)
 }
 
 #ifdef CONFIG_PM
-static int platform_lcd_suspend(struct platform_device *pdev, pm_message_t st)
+static int platform_lcd_suspend(struct device *dev)
 {
-	struct platform_lcd *plcd = platform_get_drvdata(pdev);
+	struct platform_lcd *plcd = dev_get_drvdata(dev);
 
 	plcd->suspended = 1;
 	platform_lcd_set_power(plcd->lcd, plcd->power);
@@ -131,29 +132,39 @@ static int platform_lcd_suspend(struct platform_device *pdev, pm_message_t st)
 	return 0;
 }
 
-static int platform_lcd_resume(struct platform_device *pdev)
+static int platform_lcd_resume(struct device *dev)
 {
-	struct platform_lcd *plcd = platform_get_drvdata(pdev);
+	struct platform_lcd *plcd = dev_get_drvdata(dev);
 
 	plcd->suspended = 0;
 	platform_lcd_set_power(plcd->lcd, plcd->power);
 
 	return 0;
 }
-#else
-#define platform_lcd_suspend NULL
-#define platform_lcd_resume NULL
+
+static SIMPLE_DEV_PM_OPS(platform_lcd_pm_ops, platform_lcd_suspend,
+			platform_lcd_resume);
+#endif
+
+#ifdef CONFIG_OF
+static const struct of_device_id platform_lcd_of_match[] = {
+	{ .compatible = "platform-lcd" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, platform_lcd_of_match);
 #endif
 
 static struct platform_driver platform_lcd_driver = {
 	.driver		= {
 		.name	= "platform-lcd",
 		.owner	= THIS_MODULE,
+#ifdef CONFIG_PM
+		.pm	= &platform_lcd_pm_ops,
+#endif
+		.of_match_table = of_match_ptr(platform_lcd_of_match),
 	},
 	.probe		= platform_lcd_probe,
 	.remove		= __devexit_p(platform_lcd_remove),
-	.suspend        = platform_lcd_suspend,
-	.resume         = platform_lcd_resume,
 };
 
 module_platform_driver(platform_lcd_driver);

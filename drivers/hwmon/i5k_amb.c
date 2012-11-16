@@ -21,12 +21,10 @@
  */
 
 #include <linux/module.h>
-#include <linux/jiffies.h>
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/err.h>
 #include <linux/mutex.h>
-#include <linux/delay.h>
 #include <linux/log2.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
@@ -159,8 +157,12 @@ static ssize_t store_amb_min(struct device *dev,
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct i5k_amb_data *data = dev_get_drvdata(dev);
-	unsigned long temp = simple_strtoul(buf, NULL, 10) / 500;
+	unsigned long temp;
+	int ret = kstrtoul(buf, 10, &temp);
+	if (ret < 0)
+		return ret;
 
+	temp = temp / 500;
 	if (temp > 255)
 		temp = 255;
 
@@ -175,8 +177,12 @@ static ssize_t store_amb_mid(struct device *dev,
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct i5k_amb_data *data = dev_get_drvdata(dev);
-	unsigned long temp = simple_strtoul(buf, NULL, 10) / 500;
+	unsigned long temp;
+	int ret = kstrtoul(buf, 10, &temp);
+	if (ret < 0)
+		return ret;
 
+	temp = temp / 500;
 	if (temp > 255)
 		temp = 255;
 
@@ -191,8 +197,12 @@ static ssize_t store_amb_max(struct device *dev,
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct i5k_amb_data *data = dev_get_drvdata(dev);
-	unsigned long temp = simple_strtoul(buf, NULL, 10) / 500;
+	unsigned long temp;
+	int ret = kstrtoul(buf, 10, &temp);
+	if (ret < 0)
+		return ret;
 
+	temp = temp / 500;
 	if (temp > 255)
 		temp = 255;
 

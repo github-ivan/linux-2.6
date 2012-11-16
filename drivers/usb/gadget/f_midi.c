@@ -21,7 +21,6 @@
 
 #include <linux/kernel.h>
 #include <linux/slab.h>
-#include <linux/utsname.h>
 #include <linux/device.h>
 
 #include <sound/core.h>
@@ -780,7 +779,7 @@ f_midi_bind(struct usb_configuration *c, struct usb_function *f)
 	midi->out_ep->driver_data = cdev;	/* claim */
 
 	/* allocate temporary function list */
-	midi_function = kcalloc((MAX_PORTS * 4) + 9, sizeof(midi_function),
+	midi_function = kcalloc((MAX_PORTS * 4) + 9, sizeof(*midi_function),
 				GFP_KERNEL);
 	if (!midi_function) {
 		status = -ENOMEM;

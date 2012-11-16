@@ -60,7 +60,7 @@ static struct irq_chip fsl_msi_chip = {
 	.name		= "FSL-MSI",
 };
 
-static int fsl_msi_host_map(struct irq_host *h, unsigned int virq,
+static int fsl_msi_host_map(struct irq_domain *h, unsigned int virq,
 				irq_hw_number_t hw)
 {
 	struct fsl_msi *msi_data = h->host_data;
@@ -74,7 +74,7 @@ static int fsl_msi_host_map(struct irq_host *h, unsigned int virq,
 	return 0;
 }
 
-static struct irq_host_ops fsl_msi_host_ops = {
+static const struct irq_domain_ops fsl_msi_host_ops = {
 	.map = fsl_msi_host_map,
 };
 
@@ -368,7 +368,7 @@ static int __devinit fsl_of_msi_probe(struct platform_device *dev)
 	int err, i, j, irq_index, count;
 	int rc;
 	const u32 *p;
-	struct fsl_msi_feature *features;
+	const struct fsl_msi_feature *features;
 	int len;
 	u32 offset;
 	static const u32 all_avail[] = { 0, NR_MSI_IRQS };
@@ -387,8 +387,8 @@ static int __devinit fsl_of_msi_probe(struct platform_device *dev)
 	}
 	platform_set_drvdata(dev, msi);
 
-	msi->irqhost = irq_alloc_host(dev->dev.of_node, IRQ_HOST_MAP_LINEAR,
-				      NR_MSI_IRQS, &fsl_msi_host_ops, 0);
+	msi->irqhost = irq_domain_add_linear(dev->dev.of_node,
+				      NR_MSI_IRQS, &fsl_msi_host_ops, msi);
 
 	if (msi->irqhost == NULL) {
 		dev_err(&dev->dev, "No memory for MSI irqhost\n");
@@ -410,6 +410,7 @@ static int __devinit fsl_of_msi_probe(struct platform_device *dev)
 
 		msi->msi_regs = ioremap(res.start, resource_size(&res));
 		if (!msi->msi_regs) {
+			err = -ENOMEM;
 			dev_err(&dev->dev, "could not map node %s\n",
 				dev->dev.of_node->full_name);
 			goto error_out;
@@ -419,8 +420,6 @@ static int __devinit fsl_of_msi_probe(struct platform_device *dev)
 	}
 
 	msi->feature = features->fsl_pic_ip;
-
-	msi->irqhost->host_data = msi;
 
 	/*
 	 * Remember the phandle, so that we can match with any PCI nodes
@@ -503,15 +502,15 @@ static const struct fsl_msi_feature vmpic_msi_feature = {
 static const struct of_device_id fsl_of_msi_ids[] = {
 	{
 		.compatible = "fsl,mpic-msi",
-		.data = (void *)&mpic_msi_feature,
+		.data = &mpic_msi_feature,
 	},
 	{
 		.compatible = "fsl,ipic-msi",
-		.data = (void *)&ipic_msi_feature,
+		.data = &ipic_msi_feature,
 	},
 	{
 		.compatible = "fsl,vmpic-msi",
-		.data = (void *)&vmpic_msi_feature,
+		.data = &vmpic_msi_feature,
 	},
 	{}
 };

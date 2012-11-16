@@ -327,7 +327,7 @@ static int da9052_bat_interpolate(int vbat_lower, int  vbat_upper,
 	return tmp;
 }
 
-unsigned char da9052_determine_vc_tbl_index(unsigned char adc_temp)
+static unsigned char da9052_determine_vc_tbl_index(unsigned char adc_temp)
 {
 	int i;
 
@@ -345,6 +345,13 @@ unsigned char da9052_determine_vc_tbl_index(unsigned char adc_temp)
 		     && (adc_temp <= vc_tbl_ref[i]))
 				return i + 1;
 	}
+	/*
+	 * For some reason authors of the driver didn't presume that we can
+	 * end up here. It might be OK, but might be not, no one knows for
+	 * sure. Go check your battery, is it on fire?
+	 */
+	WARN_ON(1);
+	return 0;
 }
 
 static int da9052_bat_read_capacity(struct da9052_battery *bat, int *capacity)
@@ -612,10 +619,11 @@ static s32 __devinit da9052_bat_probe(struct platform_device *pdev)
 	 if (ret)
 		goto err;
 
+	platform_set_drvdata(pdev, bat);
 	return 0;
 
 err:
-	for (; i >= 0; i--) {
+	while (--i >= 0) {
 		irq = platform_get_irq_byname(pdev, da9052_bat_irqs[i]);
 		free_irq(bat->da9052->irq_base + irq, bat);
 	}
@@ -633,6 +641,7 @@ static int __devexit da9052_bat_remove(struct platform_device *pdev)
 		free_irq(bat->da9052->irq_base + irq, bat);
 	}
 	power_supply_unregister(&bat->psy);
+	kfree(bat);
 
 	return 0;
 }
@@ -645,18 +654,7 @@ static struct platform_driver da9052_bat_driver = {
 		.owner = THIS_MODULE,
 	},
 };
-
-static int __init da9052_bat_init(void)
-{
-	return platform_driver_register(&da9052_bat_driver);
-}
-module_init(da9052_bat_init);
-
-static void __exit da9052_bat_exit(void)
-{
-	platform_driver_unregister(&da9052_bat_driver);
-}
-module_exit(da9052_bat_exit);
+module_platform_driver(da9052_bat_driver);
 
 MODULE_DESCRIPTION("DA9052 BAT Device Driver");
 MODULE_AUTHOR("David Dajun Chen <dchen@diasemi.com>");

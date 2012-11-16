@@ -20,7 +20,6 @@
 #include <linux/clk.h>
 #include <linux/mutex.h>
 #include <linux/cpufreq.h>
-#include <linux/debugfs.h>
 #include <linux/io.h>
 
 #include <plat/clock.h>
@@ -313,33 +312,6 @@ void clk_enable_init_clocks(void)
 	}
 }
 
-/**
- * omap_clk_get_by_name - locate OMAP struct clk by its name
- * @name: name of the struct clk to locate
- *
- * Locate an OMAP struct clk by its name.  Assumes that struct clk
- * names are unique.  Returns NULL if not found or a pointer to the
- * struct clk if found.
- */
-struct clk *omap_clk_get_by_name(const char *name)
-{
-	struct clk *c;
-	struct clk *ret = NULL;
-
-	mutex_lock(&clocks_mutex);
-
-	list_for_each_entry(c, &clocks, node) {
-		if (!strcmp(c->name, name)) {
-			ret = c;
-			break;
-		}
-	}
-
-	mutex_unlock(&clocks_mutex);
-
-	return ret;
-}
-
 int omap_clk_enable_autoidle_all(void)
 {
 	struct clk *c;
@@ -399,32 +371,6 @@ struct clk dummy_ck = {
 	.ops	= &clkops_null,
 };
 
-#ifdef CONFIG_CPU_FREQ
-void clk_init_cpufreq_table(struct cpufreq_frequency_table **table)
-{
-	unsigned long flags;
-
-	if (!arch_clock || !arch_clock->clk_init_cpufreq_table)
-		return;
-
-	spin_lock_irqsave(&clockfw_lock, flags);
-	arch_clock->clk_init_cpufreq_table(table);
-	spin_unlock_irqrestore(&clockfw_lock, flags);
-}
-
-void clk_exit_cpufreq_table(struct cpufreq_frequency_table **table)
-{
-	unsigned long flags;
-
-	if (!arch_clock || !arch_clock->clk_exit_cpufreq_table)
-		return;
-
-	spin_lock_irqsave(&clockfw_lock, flags);
-	arch_clock->clk_exit_cpufreq_table(table);
-	spin_unlock_irqrestore(&clockfw_lock, flags);
-}
-#endif
-
 /*
  *
  */
@@ -442,6 +388,8 @@ static int __init clk_disable_unused(void)
 		return 0;
 
 	pr_info("clock: disabling unused clocks to save power\n");
+
+	spin_lock_irqsave(&clockfw_lock, flags);
 	list_for_each_entry(ck, &clocks, node) {
 		if (ck->ops == &clkops_null)
 			continue;
@@ -449,10 +397,9 @@ static int __init clk_disable_unused(void)
 		if (ck->usecount > 0 || !ck->enable_reg)
 			continue;
 
-		spin_lock_irqsave(&clockfw_lock, flags);
 		arch_clock->clk_disable_unused(ck);
-		spin_unlock_irqrestore(&clockfw_lock, flags);
 	}
+	spin_unlock_irqrestore(&clockfw_lock, flags);
 
 	return 0;
 }
@@ -487,6 +434,7 @@ static int clk_dbg_show_summary(struct seq_file *s, void *unused)
 	struct clk *c;
 	struct clk *pa;
 
+	mutex_lock(&clocks_mutex);
 	seq_printf(s, "%-30s %-30s %-10s %s\n",
 		"clock-name", "parent-name", "rate", "use-count");
 
@@ -495,6 +443,7 @@ static int clk_dbg_show_summary(struct seq_file *s, void *unused)
 		seq_printf(s, "%-30s %-30s %-10lu %d\n",
 			c->name, pa ? pa->name : "none", c->rate, c->usecount);
 	}
+	mutex_unlock(&clocks_mutex);
 
 	return 0;
 }

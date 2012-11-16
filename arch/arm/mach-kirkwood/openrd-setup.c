@@ -20,7 +20,7 @@
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <mach/kirkwood.h>
-#include <plat/mvsdio.h>
+#include <linux/platform_data/mmc-mvsdio.h>
 #include "common.h"
 #include "mpp.h"
 
@@ -81,6 +81,11 @@ static struct i2c_board_info i2c_board_info[] __initdata = {
 	{
 		I2C_BOARD_INFO("cs42l51", 0x4a),
 	},
+};
+
+static struct platform_device openrd_client_audio_device = {
+	.name		= "openrd-client-audio",
+	.id		= -1,
 };
 
 static int __initdata uart1;
@@ -172,6 +177,7 @@ static void __init openrd_init(void)
 	kirkwood_i2c_init();
 
 	if (machine_is_openrd_client() || machine_is_openrd_ultimate()) {
+		platform_device_register(&openrd_client_audio_device);
 		i2c_register_board_info(0, i2c_board_info,
 			ARRAY_SIZE(i2c_board_info));
 		kirkwood_audio_init();

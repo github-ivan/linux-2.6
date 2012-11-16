@@ -42,13 +42,13 @@ static int kvm_iommu_unmap_memslots(struct kvm *kvm);
 static void kvm_iommu_put_pages(struct kvm *kvm,
 				gfn_t base_gfn, unsigned long npages);
 
-static pfn_t kvm_pin_pages(struct kvm *kvm, struct kvm_memory_slot *slot,
-			   gfn_t gfn, unsigned long size)
+static pfn_t kvm_pin_pages(struct kvm_memory_slot *slot, gfn_t gfn,
+			   unsigned long size)
 {
 	gfn_t end_gfn;
 	pfn_t pfn;
 
-	pfn     = gfn_to_pfn_memslot(kvm, slot, gfn);
+	pfn     = gfn_to_pfn_memslot(slot, gfn);
 	end_gfn = gfn + (size >> PAGE_SHIFT);
 	gfn    += 1;
 
@@ -56,7 +56,7 @@ static pfn_t kvm_pin_pages(struct kvm *kvm, struct kvm_memory_slot *slot,
 		return pfn;
 
 	while (gfn < end_gfn)
-		gfn_to_pfn_memslot(kvm, slot, gfn++);
+		gfn_to_pfn_memslot(slot, gfn++);
 
 	return pfn;
 }
@@ -105,7 +105,7 @@ int kvm_iommu_map_pages(struct kvm *kvm, struct kvm_memory_slot *slot)
 		 * Pin all pages we are about to map in memory. This is
 		 * important because we unmap and unpin in 4kb steps later.
 		 */
-		pfn = kvm_pin_pages(kvm, slot, gfn, page_size);
+		pfn = kvm_pin_pages(slot, gfn, page_size);
 		if (is_error_pfn(pfn)) {
 			gfn += 1;
 			continue;
@@ -240,9 +240,13 @@ int kvm_iommu_map_guest(struct kvm *kvm)
 		return -ENODEV;
 	}
 
+	mutex_lock(&kvm->slots_lock);
+
 	kvm->arch.iommu_domain = iommu_domain_alloc(&pci_bus_type);
-	if (!kvm->arch.iommu_domain)
-		return -ENOMEM;
+	if (!kvm->arch.iommu_domain) {
+		r = -ENOMEM;
+		goto out_unlock;
+	}
 
 	if (!allow_unsafe_assigned_interrupts &&
 	    !iommu_domain_has_cap(kvm->arch.iommu_domain,
@@ -253,17 +257,16 @@ int kvm_iommu_map_guest(struct kvm *kvm)
 		       " module option.\n", __func__);
 		iommu_domain_free(kvm->arch.iommu_domain);
 		kvm->arch.iommu_domain = NULL;
-		return -EPERM;
+		r = -EPERM;
+		goto out_unlock;
 	}
 
 	r = kvm_iommu_map_memslots(kvm);
 	if (r)
-		goto out_unmap;
+		kvm_iommu_unmap_memslots(kvm);
 
-	return 0;
-
-out_unmap:
-	kvm_iommu_unmap_memslots(kvm);
+out_unlock:
+	mutex_unlock(&kvm->slots_lock);
 	return r;
 }
 
@@ -297,6 +300,12 @@ static void kvm_iommu_put_pages(struct kvm *kvm,
 
 		/* Get physical address */
 		phys = iommu_iova_to_phys(domain, gfn_to_gpa(gfn));
+
+		if (!phys) {
+			gfn++;
+			continue;
+		}
+
 		pfn  = phys >> PAGE_SHIFT;
 
 		/* Unmap address from IO address space */
@@ -310,6 +319,11 @@ static void kvm_iommu_put_pages(struct kvm *kvm,
 	}
 }
 
+void kvm_iommu_unmap_pages(struct kvm *kvm, struct kvm_memory_slot *slot)
+{
+	kvm_iommu_put_pages(kvm, slot->base_gfn, slot->npages);
+}
+
 static int kvm_iommu_unmap_memslots(struct kvm *kvm)
 {
 	int idx;
@@ -320,7 +334,7 @@ static int kvm_iommu_unmap_memslots(struct kvm *kvm)
 	slots = kvm_memslots(kvm);
 
 	kvm_for_each_memslot(memslot, slots)
-		kvm_iommu_put_pages(kvm, memslot->base_gfn, memslot->npages);
+		kvm_iommu_unmap_pages(kvm, memslot);
 
 	srcu_read_unlock(&kvm->srcu, idx);
 
@@ -335,7 +349,11 @@ int kvm_iommu_unmap_guest(struct kvm *kvm)
 	if (!domain)
 		return 0;
 
+	mutex_lock(&kvm->slots_lock);
 	kvm_iommu_unmap_memslots(kvm);
+	kvm->arch.iommu_domain = NULL;
+	mutex_unlock(&kvm->slots_lock);
+
 	iommu_domain_free(domain);
 	return 0;
 }

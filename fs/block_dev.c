@@ -16,6 +16,7 @@
 #include <linux/blkdev.h>
 #include <linux/module.h>
 #include <linux/blkpg.h>
+#include <linux/magic.h>
 #include <linux/buffer_head.h>
 #include <linux/swap.h>
 #include <linux/pagevec.h>
@@ -69,7 +70,7 @@ static void bdev_inode_switch_bdi(struct inode *inode,
 	spin_unlock(&dst->wb.list_lock);
 }
 
-static sector_t max_block(struct block_device *bdev)
+sector_t blkdev_max_block(struct block_device *bdev)
 {
 	sector_t retval = ~((sector_t)0);
 	loff_t sz = i_size_read(bdev->bd_inode);
@@ -109,12 +110,14 @@ void invalidate_bdev(struct block_device *bdev)
 	/* 99% of the time, we don't need to flush the cleancache on the bdev.
 	 * But, for the strange corners, lets be cautious
 	 */
-	cleancache_flush_inode(mapping);
+	cleancache_invalidate_inode(mapping);
 }
 EXPORT_SYMBOL(invalidate_bdev);
 
 int set_blocksize(struct block_device *bdev, int size)
 {
+	struct address_space *mapping;
+
 	/* Size must be a power of two, and between 512 and PAGE_SIZE */
 	if (size > PAGE_SIZE || size < 512 || !is_power_of_2(size))
 		return -EINVAL;
@@ -123,6 +126,19 @@ int set_blocksize(struct block_device *bdev, int size)
 	if (size < bdev_logical_block_size(bdev))
 		return -EINVAL;
 
+	/* Prevent starting I/O or mapping the device */
+	percpu_down_write(&bdev->bd_block_size_semaphore);
+
+	/* Check that the block device is not memory mapped */
+	mapping = bdev->bd_inode->i_mapping;
+	mutex_lock(&mapping->i_mmap_mutex);
+	if (mapping_mapped(mapping)) {
+		mutex_unlock(&mapping->i_mmap_mutex);
+		percpu_up_write(&bdev->bd_block_size_semaphore);
+		return -EBUSY;
+	}
+	mutex_unlock(&mapping->i_mmap_mutex);
+
 	/* Don't change the size if it is same as current */
 	if (bdev->bd_block_size != size) {
 		sync_blockdev(bdev);
@@ -130,6 +146,9 @@ int set_blocksize(struct block_device *bdev, int size)
 		bdev->bd_inode->i_blkbits = blksize_bits(size);
 		kill_bdev(bdev);
 	}
+
+	percpu_up_write(&bdev->bd_block_size_semaphore);
+
 	return 0;
 }
 
@@ -162,7 +181,7 @@ static int
 blkdev_get_block(struct inode *inode, sector_t iblock,
 		struct buffer_head *bh, int create)
 {
-	if (iblock >= max_block(I_BDEV(inode))) {
+	if (iblock >= blkdev_max_block(I_BDEV(inode))) {
 		if (create)
 			return -EIO;
 
@@ -184,7 +203,7 @@ static int
 blkdev_get_blocks(struct inode *inode, sector_t iblock,
 		struct buffer_head *bh, int create)
 {
-	sector_t end_block = max_block(I_BDEV(inode));
+	sector_t end_block = blkdev_max_block(I_BDEV(inode));
 	unsigned long max_blocks = bh->b_size >> inode->i_blkbits;
 
 	if ((iblock + max_blocks) > end_block) {
@@ -440,6 +459,12 @@ static struct inode *bdev_alloc_inode(struct super_block *sb)
 	struct bdev_inode *ei = kmem_cache_alloc(bdev_cachep, GFP_KERNEL);
 	if (!ei)
 		return NULL;
+
+	if (unlikely(percpu_init_rwsem(&ei->bdev.bd_block_size_semaphore))) {
+		kmem_cache_free(bdev_cachep, ei);
+		return NULL;
+	}
+
 	return &ei->vfs_inode;
 }
 
@@ -447,6 +472,8 @@ static void bdev_i_callback(struct rcu_head *head)
 {
 	struct inode *inode = container_of(head, struct inode, i_rcu);
 	struct bdev_inode *bdi = BDEV_I(inode);
+
+	percpu_free_rwsem(&bdi->bdev.bd_block_size_semaphore);
 
 	kmem_cache_free(bdev_cachep, bdi);
 }
@@ -486,7 +513,7 @@ static void bdev_evict_inode(struct inode *inode)
 	struct list_head *p;
 	truncate_inode_pages(&inode->i_data, 0);
 	invalidate_inode_buffers(inode); /* is it needed here? */
-	end_writeback(inode);
+	clear_inode(inode);
 	spin_lock(&bdev_lock);
 	while ( (p = bdev->bd_inodes.next) != &bdev->bd_inodes ) {
 		__bd_forget(list_entry(p, struct inode, i_devices));
@@ -506,7 +533,7 @@ static const struct super_operations bdev_sops = {
 static struct dentry *bd_mount(struct file_system_type *fs_type,
 	int flags, const char *dev_name, void *data)
 {
-	return mount_pseudo(fs_type, "bdev:", &bdev_sops, NULL, 0x62646576);
+	return mount_pseudo(fs_type, "bdev:", &bdev_sops, NULL, BDEVFS_MAGIC);
 }
 
 static struct file_system_type bd_type = {
@@ -1183,8 +1210,12 @@ static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
 			 * The latter is necessary to prevent ghost
 			 * partitions on a removed medium.
 			 */
-			if (bdev->bd_invalidated && (!ret || ret == -ENOMEDIUM))
-				rescan_partitions(disk, bdev);
+			if (bdev->bd_invalidated) {
+				if (!ret)
+					rescan_partitions(disk, bdev);
+				else if (ret == -ENOMEDIUM)
+					invalidate_partitions(disk, bdev);
+			}
 			if (ret)
 				goto out_clear;
 		} else {
@@ -1214,8 +1245,12 @@ static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
 			if (bdev->bd_disk->fops->open)
 				ret = bdev->bd_disk->fops->open(bdev, mode);
 			/* the same as first opener case, read comment there */
-			if (bdev->bd_invalidated && (!ret || ret == -ENOMEDIUM))
-				rescan_partitions(bdev->bd_disk, bdev);
+			if (bdev->bd_invalidated) {
+				if (!ret)
+					rescan_partitions(bdev->bd_disk, bdev);
+				else if (ret == -ENOMEDIUM)
+					invalidate_partitions(bdev->bd_disk, bdev);
+			}
 			if (ret)
 				goto out_unlock_bdev;
 		}
@@ -1558,6 +1593,22 @@ static long block_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 	return blkdev_ioctl(bdev, mode, cmd, arg);
 }
 
+ssize_t blkdev_aio_read(struct kiocb *iocb, const struct iovec *iov,
+			unsigned long nr_segs, loff_t pos)
+{
+	ssize_t ret;
+	struct block_device *bdev = I_BDEV(iocb->ki_filp->f_mapping->host);
+
+	percpu_down_read(&bdev->bd_block_size_semaphore);
+
+	ret = generic_file_aio_read(iocb, iov, nr_segs, pos);
+
+	percpu_up_read(&bdev->bd_block_size_semaphore);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(blkdev_aio_read);
+
 /*
  * Write data to the block device.  Only intended for the block device itself
  * and the raw driver which basically is a fake block device.
@@ -1569,9 +1620,15 @@ ssize_t blkdev_aio_write(struct kiocb *iocb, const struct iovec *iov,
 			 unsigned long nr_segs, loff_t pos)
 {
 	struct file *file = iocb->ki_filp;
+	struct block_device *bdev = I_BDEV(file->f_mapping->host);
+	struct blk_plug plug;
 	ssize_t ret;
 
 	BUG_ON(iocb->ki_pos != pos);
+
+	blk_start_plug(&plug);
+
+	percpu_down_read(&bdev->bd_block_size_semaphore);
 
 	ret = __generic_file_aio_write(iocb, iov, nr_segs, &iocb->ki_pos);
 	if (ret > 0 || ret == -EIOCBQUEUED) {
@@ -1581,9 +1638,61 @@ ssize_t blkdev_aio_write(struct kiocb *iocb, const struct iovec *iov,
 		if (err < 0 && ret > 0)
 			ret = err;
 	}
+
+	percpu_up_read(&bdev->bd_block_size_semaphore);
+
+	blk_finish_plug(&plug);
+
 	return ret;
 }
 EXPORT_SYMBOL_GPL(blkdev_aio_write);
+
+static int blkdev_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	int ret;
+	struct block_device *bdev = I_BDEV(file->f_mapping->host);
+
+	percpu_down_read(&bdev->bd_block_size_semaphore);
+
+	ret = generic_file_mmap(file, vma);
+
+	percpu_up_read(&bdev->bd_block_size_semaphore);
+
+	return ret;
+}
+
+static ssize_t blkdev_splice_read(struct file *file, loff_t *ppos,
+				  struct pipe_inode_info *pipe, size_t len,
+				  unsigned int flags)
+{
+	ssize_t ret;
+	struct block_device *bdev = I_BDEV(file->f_mapping->host);
+
+	percpu_down_read(&bdev->bd_block_size_semaphore);
+
+	ret = generic_file_splice_read(file, ppos, pipe, len, flags);
+
+	percpu_up_read(&bdev->bd_block_size_semaphore);
+
+	return ret;
+}
+
+static ssize_t blkdev_splice_write(struct pipe_inode_info *pipe,
+				   struct file *file, loff_t *ppos, size_t len,
+				   unsigned int flags)
+{
+	ssize_t ret;
+	struct block_device *bdev = I_BDEV(file->f_mapping->host);
+
+	percpu_down_read(&bdev->bd_block_size_semaphore);
+
+	ret = generic_file_splice_write(pipe, file, ppos, len, flags);
+
+	percpu_up_read(&bdev->bd_block_size_semaphore);
+
+	return ret;
+}
+
 
 /*
  * Try to release a page associated with block device when the system
@@ -1615,16 +1724,16 @@ const struct file_operations def_blk_fops = {
 	.llseek		= block_llseek,
 	.read		= do_sync_read,
 	.write		= do_sync_write,
-  	.aio_read	= generic_file_aio_read,
+  	.aio_read	= blkdev_aio_read,
 	.aio_write	= blkdev_aio_write,
-	.mmap		= generic_file_mmap,
+	.mmap		= blkdev_mmap,
 	.fsync		= blkdev_fsync,
 	.unlocked_ioctl	= block_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= compat_blkdev_ioctl,
 #endif
-	.splice_read	= generic_file_splice_read,
-	.splice_write	= generic_file_splice_write,
+	.splice_read	= blkdev_splice_read,
+	.splice_write	= blkdev_splice_write,
 };
 
 int ioctl_by_bdev(struct block_device *bdev, unsigned cmd, unsigned long arg)
@@ -1701,3 +1810,39 @@ int __invalidate_device(struct block_device *bdev, bool kill_dirty)
 	return res;
 }
 EXPORT_SYMBOL(__invalidate_device);
+
+void iterate_bdevs(void (*func)(struct block_device *, void *), void *arg)
+{
+	struct inode *inode, *old_inode = NULL;
+
+	spin_lock(&inode_sb_list_lock);
+	list_for_each_entry(inode, &blockdev_superblock->s_inodes, i_sb_list) {
+		struct address_space *mapping = inode->i_mapping;
+
+		spin_lock(&inode->i_lock);
+		if (inode->i_state & (I_FREEING|I_WILL_FREE|I_NEW) ||
+		    mapping->nrpages == 0) {
+			spin_unlock(&inode->i_lock);
+			continue;
+		}
+		__iget(inode);
+		spin_unlock(&inode->i_lock);
+		spin_unlock(&inode_sb_list_lock);
+		/*
+		 * We hold a reference to 'inode' so it couldn't have been
+		 * removed from s_inodes list while we dropped the
+		 * inode_sb_list_lock.  We cannot iput the inode now as we can
+		 * be holding the last reference and we cannot iput it under
+		 * inode_sb_list_lock. So we keep the reference and iput it
+		 * later.
+		 */
+		iput(old_inode);
+		old_inode = inode;
+
+		func(I_BDEV(inode), arg);
+
+		spin_lock(&inode_sb_list_lock);
+	}
+	spin_unlock(&inode_sb_list_lock);
+	iput(old_inode);
+}

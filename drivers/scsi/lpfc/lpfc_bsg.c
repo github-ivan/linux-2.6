@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2009-2011 Emulex.  All rights reserved.           *
+ * Copyright (C) 2009-2012 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.emulex.com                                                  *
  *                                                                 *
@@ -195,7 +195,7 @@ lpfc_bsg_send_mgmt_cmd_cmp(struct lpfc_hba *phba,
 
 	if (rsp->ulpStatus) {
 		if (rsp->ulpStatus == IOSTAT_LOCAL_REJECT) {
-			switch (rsp->un.ulpWord[4] & 0xff) {
+			switch (rsp->un.ulpWord[4] & IOERR_PARAM_MASK) {
 			case IOERR_SEQUENCE_TIMEOUT:
 				rc = -ETIMEDOUT;
 				break;
@@ -589,13 +589,17 @@ lpfc_bsg_rport_els(struct fc_bsg_job *job)
 	}
 	cmdiocbq->iocb.un.elsreq64.bdl.bdeSize =
 		(request_nseg + reply_nseg) * sizeof(struct ulp_bde64);
-	cmdiocbq->iocb.ulpContext = rpi;
+	if (phba->sli_rev == LPFC_SLI_REV4)
+		cmdiocbq->iocb.ulpContext = phba->sli4_hba.rpi_ids[rpi];
+	else
+		cmdiocbq->iocb.ulpContext = rpi;
 	cmdiocbq->iocb_flag |= LPFC_IO_LIBDFC;
 	cmdiocbq->context1 = NULL;
 	cmdiocbq->context2 = NULL;
 
 	cmdiocbq->iocb_cmpl = lpfc_bsg_rport_els_cmp;
 	cmdiocbq->context1 = dd_data;
+	cmdiocbq->context_un.ndlp = ndlp;
 	cmdiocbq->context2 = rspiocbq;
 	dd_data->type = TYPE_IOCB;
 	dd_data->context_un.iocb.cmdiocbq = cmdiocbq;
@@ -1230,7 +1234,7 @@ lpfc_issue_ct_rsp_cmp(struct lpfc_hba *phba,
 
 	if (rsp->ulpStatus) {
 		if (rsp->ulpStatus == IOSTAT_LOCAL_REJECT) {
-			switch (rsp->un.ulpWord[4] & 0xff) {
+			switch (rsp->un.ulpWord[4] & IOERR_PARAM_MASK) {
 			case IOERR_SEQUENCE_TIMEOUT:
 				rc = -ETIMEDOUT;
 				break;
@@ -1710,6 +1714,8 @@ lpfc_sli4_bsg_set_link_diag_state(struct lpfc_hba *phba, uint32_t diag)
 			phba->sli4_hba.lnk_info.lnk_no);
 
 	link_diag_state = &pmboxq->u.mqe.un.link_diag_state;
+	bf_set(lpfc_mbx_set_diag_state_diag_bit_valid, &link_diag_state->u.req,
+	       LPFC_DIAG_STATE_DIAG_BIT_VALID_CHANGE);
 	bf_set(lpfc_mbx_set_diag_state_link_num, &link_diag_state->u.req,
 	       phba->sli4_hba.lnk_info.lnk_no);
 	bf_set(lpfc_mbx_set_diag_state_link_type, &link_diag_state->u.req,
@@ -1768,7 +1774,7 @@ lpfc_sli4_bsg_set_internal_loopback(struct lpfc_hba *phba)
 	bf_set(lpfc_mbx_set_diag_state_link_type,
 	       &link_diag_loopback->u.req, phba->sli4_hba.lnk_info.lnk_tp);
 	bf_set(lpfc_mbx_set_diag_lpbk_type, &link_diag_loopback->u.req,
-	       LPFC_DIAG_LOOPBACK_TYPE_SERDES);
+	       LPFC_DIAG_LOOPBACK_TYPE_INTERNAL);
 
 	mbxstatus = lpfc_sli_issue_mbox_wait(phba, pmboxq, LPFC_MBOX_TMO);
 	if ((mbxstatus != MBX_SUCCESS) || (pmboxq->u.mb.mbxStatus)) {
@@ -3975,9 +3981,10 @@ lpfc_bsg_handle_sli_cfg_mbox(struct lpfc_hba *phba, struct fc_bsg_job *job,
 		} else if (subsys == SLI_CONFIG_SUBSYS_COMN) {
 			switch (opcode) {
 			case COMN_OPCODE_GET_CNTL_ADDL_ATTRIBUTES:
+			case COMN_OPCODE_GET_CNTL_ATTRIBUTES:
 				lpfc_printf_log(phba, KERN_INFO, LOG_LIBDFC,
 						"3106 Handled SLI_CONFIG "
-						"subsys_fcoe, opcode:x%x\n",
+						"subsys_comn, opcode:x%x\n",
 						opcode);
 				rc = lpfc_bsg_sli_cfg_read_cmd_ext(phba, job,
 							nemb_mse, dmabuf);
@@ -3985,7 +3992,7 @@ lpfc_bsg_handle_sli_cfg_mbox(struct lpfc_hba *phba, struct fc_bsg_job *job,
 			default:
 				lpfc_printf_log(phba, KERN_INFO, LOG_LIBDFC,
 						"3107 Reject SLI_CONFIG "
-						"subsys_fcoe, opcode:x%x\n",
+						"subsys_comn, opcode:x%x\n",
 						opcode);
 				rc = -EPERM;
 				break;
@@ -4556,7 +4563,12 @@ lpfc_bsg_issue_mbox(struct lpfc_hba *phba, struct fc_bsg_job *job,
 							+ sizeof(MAILBOX_t));
 		}
 	} else if (phba->sli_rev == LPFC_SLI_REV4) {
-		if (pmb->mbxCommand == MBX_DUMP_MEMORY) {
+		/* Let type 4 (well known data) through because the data is
+		 * returned in varwords[4-8]
+		 * otherwise check the recieve length and fetch the buffer addr
+		 */
+		if ((pmb->mbxCommand == MBX_DUMP_MEMORY) &&
+			(pmb->un.varDmp.type != DMP_WELL_KNOWN)) {
 			/* rebuild the command for sli4 using our own buffers
 			* like we do for biu diags
 			*/
@@ -4786,7 +4798,7 @@ lpfc_bsg_menlo_cmd_cmp(struct lpfc_hba *phba,
 	menlo_resp->xri = rsp->ulpContext;
 	if (rsp->ulpStatus) {
 		if (rsp->ulpStatus == IOSTAT_LOCAL_REJECT) {
-			switch (rsp->un.ulpWord[4] & 0xff) {
+			switch (rsp->un.ulpWord[4] & IOERR_PARAM_MASK) {
 			case IOERR_SEQUENCE_TIMEOUT:
 				rc = -ETIMEDOUT;
 				break;

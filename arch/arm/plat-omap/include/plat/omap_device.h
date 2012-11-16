@@ -36,7 +36,7 @@
 
 #include <plat/omap_hwmod.h>
 
-extern struct device omap_device_parent;
+extern struct dev_pm_domain omap_device_pm_domain;
 
 /* omap_device._state values */
 #define OMAP_DEVICE_STATE_UNKNOWN	0
@@ -60,6 +60,7 @@ extern struct device omap_device_parent;
  * @_dev_wakeup_lat_limit: dev wakeup latency limit in nsec - set by OMAP PM
  * @_state: one of OMAP_DEVICE_STATE_* (see above)
  * @flags: device flags
+ * @_driver_status: one of BUS_NOTIFY_*_DRIVER from <linux/device.h>
  *
  * Integrates omap_hwmod data into Linux platform_device.
  *
@@ -73,6 +74,7 @@ struct omap_device {
 	struct omap_device_pm_latency	*pm_lats;
 	u32				dev_wakeup_lat;
 	u32				_dev_wakeup_lat_limit;
+	unsigned long			_driver_status;
 	u8				pm_lats_cnt;
 	s8				pm_lat_level;
 	u8				hwmods_cnt;
@@ -100,6 +102,13 @@ struct platform_device *omap_device_build_ss(const char *pdev_name, int pdev_id,
 					 struct omap_device_pm_latency *pm_lats,
 					 int pm_lats_cnt, int is_early_device);
 
+struct omap_device *omap_device_alloc(struct platform_device *pdev,
+				      struct omap_hwmod **ohs, int oh_cnt,
+				      struct omap_device_pm_latency *pm_lats,
+				      int pm_lats_cnt);
+void omap_device_delete(struct omap_device *od);
+int omap_device_register(struct platform_device *pdev);
+
 void __iomem *omap_device_get_rt_va(struct omap_device *od);
 struct device *omap_device_get_by_hwmod_name(const char *oh_name);
 
@@ -111,6 +120,10 @@ int omap_device_get_context_loss_count(struct platform_device *pdev);
 
 /* Other */
 
+int omap_device_assert_hardreset(struct platform_device *pdev,
+				 const char *name);
+int omap_device_deassert_hardreset(struct platform_device *pdev,
+				 const char *name);
 int omap_device_idle_hwmods(struct omap_device *od);
 int omap_device_enable_hwmods(struct omap_device *od);
 

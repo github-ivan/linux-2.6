@@ -27,6 +27,7 @@
 
 #include <asm/irq.h>
 #include <asm/proc-fns.h>
+#include <asm/system_misc.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/mach/irq.h>
@@ -43,6 +44,7 @@
 #include <plat/sdhci.h>
 #include <plat/adc-core.h>
 #include <plat/fb-core.h>
+#include <plat/spi-core.h>
 #include <plat/gpio-cfg.h>
 #include <plat/regs-irqtype.h>
 #include <plat/regs-serial.h>
@@ -146,15 +148,12 @@ static void s5p64x0_idle(void)
 {
 	unsigned long val;
 
-	if (!need_resched()) {
-		val = __raw_readl(S5P64X0_PWR_CFG);
-		val &= ~(0x3 << 5);
-		val |= (0x1 << 5);
-		__raw_writel(val, S5P64X0_PWR_CFG);
+	val = __raw_readl(S5P64X0_PWR_CFG);
+	val &= ~(0x3 << 5);
+	val |= (0x1 << 5);
+	__raw_writel(val, S5P64X0_PWR_CFG);
 
-		cpu_do_idle();
-	}
-	local_irq_enable();
+	cpu_do_idle();
 }
 
 /*
@@ -181,6 +180,7 @@ void __init s5p6440_map_io(void)
 	/* initialize any device information early */
 	s3c_adc_setname("s3c64xx-adc");
 	s3c_fb_setname("s5p64x0-fb");
+	s3c64xx_spi_setname("s5p64x0-spi");
 
 	s5p64x0_default_sdhci0();
 	s5p64x0_default_sdhci1();
@@ -195,6 +195,7 @@ void __init s5p6450_map_io(void)
 	/* initialize any device information early */
 	s3c_adc_setname("s3c64xx-adc");
 	s3c_fb_setname("s5p64x0-fb");
+	s3c64xx_spi_setname("s5p64x0-spi");
 
 	s5p64x0_default_sdhci0();
 	s5p64x0_default_sdhci1();
@@ -286,7 +287,7 @@ int __init s5p64x0_init(void)
 	printk(KERN_INFO "S5P64X0(S5P6440/S5P6450): Initializing architecture\n");
 
 	/* set idle function */
-	pm_idle = s5p64x0_idle;
+	arm_pm_idle = s5p64x0_idle;
 
 	return device_register(&s5p64x0_dev);
 }

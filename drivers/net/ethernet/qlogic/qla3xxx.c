@@ -2525,6 +2525,13 @@ static int ql_alloc_net_req_rsp_queues(struct ql3_adapter *qdev)
 	qdev->req_q_size =
 	    (u32) (NUM_REQ_Q_ENTRIES * sizeof(struct ob_mac_iocb_req));
 
+	qdev->rsp_q_size = NUM_RSP_Q_ENTRIES * sizeof(struct net_rsp_iocb);
+
+	/* The barrier is required to ensure request and response queue
+	 * addr writes to the registers.
+	 */
+	wmb();
+
 	qdev->req_q_virt_addr =
 	    pci_alloc_consistent(qdev->pdev,
 				 (size_t) qdev->req_q_size,
@@ -2535,8 +2542,6 @@ static int ql_alloc_net_req_rsp_queues(struct ql3_adapter *qdev)
 		netdev_err(qdev->ndev, "reqQ failed\n");
 		return -ENOMEM;
 	}
-
-	qdev->rsp_q_size = NUM_RSP_Q_ENTRIES * sizeof(struct net_rsp_iocb);
 
 	qdev->rsp_q_virt_addr =
 	    pci_alloc_consistent(qdev->pdev,
@@ -2836,7 +2841,7 @@ static int ql_create_send_free_list(struct ql3_adapter *qdev)
 		req_q_curr++;
 		tx_cb->oal = kmalloc(512, GFP_KERNEL);
 		if (tx_cb->oal == NULL)
-			return -1;
+			return -ENOMEM;
 	}
 	return 0;
 }
@@ -3017,7 +3022,6 @@ static int ql_adapter_initialize(struct ql3_adapter *qdev)
 		(void __iomem *)port_regs;
 	u32 delay = 10;
 	int status = 0;
-	unsigned long hw_flags = 0;
 
 	if (ql_mii_setup(qdev))
 		return -1;
@@ -3228,9 +3232,9 @@ static int ql_adapter_initialize(struct ql3_adapter *qdev)
 		value = ql_read_page0_reg(qdev, &port_regs->portStatus);
 		if (value & PORT_STATUS_IC)
 			break;
-		spin_unlock_irqrestore(&qdev->hw_lock, hw_flags);
+		spin_unlock_irq(&qdev->hw_lock);
 		msleep(500);
-		spin_lock_irqsave(&qdev->hw_lock, hw_flags);
+		spin_lock_irq(&qdev->hw_lock);
 	} while (--delay);
 
 	if (delay == 0) {
@@ -3805,7 +3809,6 @@ static int __devinit ql3xxx_probe(struct pci_dev *pdev,
 
 	ndev = alloc_etherdev(sizeof(struct ql3_adapter));
 	if (!ndev) {
-		pr_err("%s could not alloc etherdev\n", pci_name(pdev));
 		err = -ENOMEM;
 		goto err_out_free_regions;
 	}

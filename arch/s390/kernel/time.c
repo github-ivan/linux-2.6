@@ -1,5 +1,4 @@
 /*
- *  arch/s390/kernel/time.c
  *    Time of day based timer functions.
  *
  *  S390 version
@@ -35,7 +34,7 @@
 #include <linux/profile.h>
 #include <linux/timex.h>
 #include <linux/notifier.h>
-#include <linux/clocksource.h>
+#include <linux/timekeeper_internal.h>
 #include <linux/clockchips.h>
 #include <linux/gfp.h>
 #include <linux/kprobes.h>
@@ -45,7 +44,7 @@
 #include <asm/vdso.h>
 #include <asm/irq.h>
 #include <asm/irq_regs.h>
-#include <asm/timer.h>
+#include <asm/vtimer.h>
 #include <asm/etr.h>
 #include <asm/cio.h>
 #include "entry.h"
@@ -113,11 +112,14 @@ static void fixup_clock_comparator(unsigned long long delta)
 static int s390_next_ktime(ktime_t expires,
 			   struct clock_event_device *evt)
 {
+	struct timespec ts;
 	u64 nsecs;
 
-	nsecs = ktime_to_ns(ktime_sub(expires, ktime_get_monotonic_offset()));
+	ts.tv_sec = ts.tv_nsec = 0;
+	monotonic_to_bootbased(&ts);
+	nsecs = ktime_to_ns(ktime_add(timespec_to_ktime(ts), expires));
 	do_div(nsecs, 125);
-	S390_lowcore.clock_comparator = TOD_UNIX_EPOCH + (nsecs << 9);
+	S390_lowcore.clock_comparator = sched_clock_base_cc + (nsecs << 9);
 	set_clock_comparator(S390_lowcore.clock_comparator);
 	return 0;
 }
@@ -162,7 +164,7 @@ void init_cpu_timer(void)
 	__ctl_set_bit(0, 4);
 }
 
-static void clock_comparator_interrupt(unsigned int ext_int_code,
+static void clock_comparator_interrupt(struct ext_code ext_code,
 				       unsigned int param32,
 				       unsigned long param64)
 {
@@ -174,7 +176,7 @@ static void clock_comparator_interrupt(unsigned int ext_int_code,
 static void etr_timing_alert(struct etr_irq_parm *);
 static void stp_timing_alert(struct stp_irq_parm *);
 
-static void timing_alert_interrupt(unsigned int ext_int_code,
+static void timing_alert_interrupt(struct ext_code ext_code,
 				   unsigned int param32, unsigned long param64)
 {
 	kstat_cpu(smp_processor_id()).irqs[EXTINT_TLA]++;
@@ -217,7 +219,7 @@ struct clocksource * __init clocksource_default_clock(void)
 	return &clocksource_tod;
 }
 
-void update_vsyscall(struct timespec *wall_time, struct timespec *wtm,
+void update_vsyscall_old(struct timespec *wall_time, struct timespec *wtm,
 			struct clocksource *clock, u32 mult)
 {
 	if (clock != &clocksource_tod)
@@ -327,7 +329,7 @@ static unsigned long clock_sync_flags;
  * The synchronous get_clock function. It will write the current clock
  * value to the clock pointer and return 0 if the clock is in sync with
  * the external time source. If the clock mode is local it will return
- * -ENOSYS and -EAGAIN if the clock is not in sync with the external
+ * -EOPNOTSUPP and -EAGAIN if the clock is not in sync with the external
  * reference.
  */
 int get_sync_clock(unsigned long long *clock)
@@ -345,7 +347,7 @@ int get_sync_clock(unsigned long long *clock)
 		return 0;
 	if (!test_bit(CLOCK_SYNC_HAS_ETR, &clock_sync_flags) &&
 	    !test_bit(CLOCK_SYNC_HAS_STP, &clock_sync_flags))
-		return -ENOSYS;
+		return -EOPNOTSUPP;
 	if (!test_bit(CLOCK_SYNC_ETR, &clock_sync_flags) &&
 	    !test_bit(CLOCK_SYNC_STP, &clock_sync_flags))
 		return -EACCES;

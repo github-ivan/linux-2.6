@@ -1908,7 +1908,7 @@ static void max98088_handle_eq_pdata(struct snd_soc_codec *codec)
        max98088->eq_enum.texts = max98088->eq_texts;
        max98088->eq_enum.max = max98088->eq_textcnt;
 
-       ret = snd_soc_add_controls(codec, controls, ARRAY_SIZE(controls));
+       ret = snd_soc_add_codec_controls(codec, controls, ARRAY_SIZE(controls));
        if (ret != 0)
                dev_err(codec->dev, "Failed to add EQ control: %d\n", ret);
 }
@@ -2030,7 +2030,7 @@ static int max98088_probe(struct snd_soc_codec *codec)
 
        max98088_handle_pdata(codec);
 
-       snd_soc_add_controls(codec, max98088_snd_controls,
+       snd_soc_add_codec_controls(codec, max98088_snd_controls,
                             ARRAY_SIZE(max98088_snd_controls));
 
 err_access:
@@ -2107,23 +2107,7 @@ static struct i2c_driver max98088_i2c_driver = {
        .id_table = max98088_i2c_id,
 };
 
-static int __init max98088_init(void)
-{
-       int ret;
-
-       ret = i2c_add_driver(&max98088_i2c_driver);
-       if (ret)
-               pr_err("Failed to register max98088 I2C driver: %d\n", ret);
-
-       return ret;
-}
-module_init(max98088_init);
-
-static void __exit max98088_exit(void)
-{
-       i2c_del_driver(&max98088_i2c_driver);
-}
-module_exit(max98088_exit);
+module_i2c_driver(max98088_i2c_driver);
 
 MODULE_DESCRIPTION("ALSA SoC MAX98088 driver");
 MODULE_AUTHOR("Peter Hsiang, Jesse Marroquin");

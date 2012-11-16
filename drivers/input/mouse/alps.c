@@ -553,10 +553,7 @@ static void alps_process_touchpad_packet_v3(struct psmouse *psmouse)
 
 	alps_report_semi_mt_data(dev, fingers, x1, y1, x2, y2);
 
-	input_report_key(dev, BTN_TOOL_FINGER, fingers == 1);
-	input_report_key(dev, BTN_TOOL_DOUBLETAP, fingers == 2);
-	input_report_key(dev, BTN_TOOL_TRIPLETAP, fingers == 3);
-	input_report_key(dev, BTN_TOOL_QUADTAP, fingers == 4);
+	input_mt_report_finger_count(dev, fingers);
 
 	input_report_key(dev, BTN_LEFT, left);
 	input_report_key(dev, BTN_RIGHT, right);
@@ -604,10 +601,54 @@ static void alps_process_packet_v3(struct psmouse *psmouse)
 
 static void alps_process_packet_v4(struct psmouse *psmouse)
 {
+	struct alps_data *priv = psmouse->private;
 	unsigned char *packet = psmouse->packet;
 	struct input_dev *dev = psmouse->dev;
+	int offset;
 	int x, y, z;
 	int left, right;
+	int x1, y1, x2, y2;
+	int fingers = 0;
+	unsigned int x_bitmap, y_bitmap;
+
+	/*
+	 * v4 has a 6-byte encoding for bitmap data, but this data is
+	 * broken up between 3 normal packets. Use priv->multi_packet to
+	 * track our position in the bitmap packet.
+	 */
+	if (packet[6] & 0x40) {
+		/* sync, reset position */
+		priv->multi_packet = 0;
+	}
+
+	if (WARN_ON_ONCE(priv->multi_packet > 2))
+		return;
+
+	offset = 2 * priv->multi_packet;
+	priv->multi_data[offset] = packet[6];
+	priv->multi_data[offset + 1] = packet[7];
+
+	if (++priv->multi_packet > 2) {
+		priv->multi_packet = 0;
+
+		x_bitmap = ((priv->multi_data[2] & 0x1f) << 10) |
+			   ((priv->multi_data[3] & 0x60) << 3) |
+			   ((priv->multi_data[0] & 0x3f) << 2) |
+			   ((priv->multi_data[1] & 0x60) >> 5);
+		y_bitmap = ((priv->multi_data[5] & 0x01) << 10) |
+			   ((priv->multi_data[3] & 0x1f) << 5) |
+			    (priv->multi_data[1] & 0x1f);
+
+		fingers = alps_process_bitmap(x_bitmap, y_bitmap,
+					      &x1, &y1, &x2, &y2);
+
+		/* Store MT data.*/
+		priv->fingers = fingers;
+		priv->x1 = x1;
+		priv->x2 = x2;
+		priv->y1 = y1;
+		priv->y2 = y2;
+	}
 
 	left = packet[4] & 0x01;
 	right = packet[4] & 0x02;
@@ -617,20 +658,40 @@ static void alps_process_packet_v4(struct psmouse *psmouse)
 	y = ((packet[2] & 0x7f) << 4) | (packet[3] & 0x0f);
 	z = packet[5] & 0x7f;
 
+	/*
+	 * If there were no contacts in the bitmap, use ST
+	 * points in MT reports.
+	 * If there were two contacts or more, report MT data.
+	 */
+	if (priv->fingers < 2) {
+		x1 = x;
+		y1 = y;
+		fingers = z > 0 ? 1 : 0;
+	} else {
+		fingers = priv->fingers;
+		x1 = priv->x1;
+		x2 = priv->x2;
+		y1 = priv->y1;
+		y2 = priv->y2;
+	}
+
 	if (z >= 64)
 		input_report_key(dev, BTN_TOUCH, 1);
 	else
 		input_report_key(dev, BTN_TOUCH, 0);
+
+	alps_report_semi_mt_data(dev, fingers, x1, y1, x2, y2);
+
+	input_mt_report_finger_count(dev, fingers);
+
+	input_report_key(dev, BTN_LEFT, left);
+	input_report_key(dev, BTN_RIGHT, right);
 
 	if (z > 0) {
 		input_report_abs(dev, ABS_X, x);
 		input_report_abs(dev, ABS_Y, y);
 	}
 	input_report_abs(dev, ABS_PRESSURE, z);
-
-	input_report_key(dev, BTN_TOOL_FINGER, z > 0);
-	input_report_key(dev, BTN_LEFT, left);
-	input_report_key(dev, BTN_RIGHT, right);
 
 	input_sync(dev);
 }
@@ -952,7 +1013,9 @@ static const struct alps_model_info *alps_get_model(struct psmouse *psmouse, int
 
 	/*
 	 * First try "E6 report".
-	 * ALPS should return 0,0,10 or 0,0,100
+	 * ALPS should return 0,0,10 or 0,0,100 if no buttons are pressed.
+	 * The bits 0-2 of the first byte will be 1s if some buttons are
+	 * pressed.
 	 */
 	param[0] = 0;
 	if (ps2_command(ps2dev, param, PSMOUSE_CMD_SETRES) ||
@@ -968,7 +1031,8 @@ static const struct alps_model_info *alps_get_model(struct psmouse *psmouse, int
 	psmouse_dbg(psmouse, "E6 report: %2.2x %2.2x %2.2x",
 		    param[0], param[1], param[2]);
 
-	if (param[0] != 0 || param[1] != 0 || (param[2] != 10 && param[2] != 100))
+	if ((param[0] & 0xf8) != 0 || param[1] != 0 ||
+	    (param[2] != 10 && param[2] != 100))
 		return NULL;
 
 	/*
@@ -1554,16 +1618,16 @@ int alps_init(struct psmouse *psmouse)
 		input_set_abs_params(dev1, ABS_Y, 0, 767, 0, 0);
 		break;
 	case ALPS_PROTO_V3:
+	case ALPS_PROTO_V4:
 		set_bit(INPUT_PROP_SEMI_MT, dev1->propbit);
-		input_mt_init_slots(dev1, 2);
+		input_mt_init_slots(dev1, 2, 0);
 		input_set_abs_params(dev1, ABS_MT_POSITION_X, 0, ALPS_V3_X_MAX, 0, 0);
 		input_set_abs_params(dev1, ABS_MT_POSITION_Y, 0, ALPS_V3_Y_MAX, 0, 0);
 
 		set_bit(BTN_TOOL_DOUBLETAP, dev1->keybit);
 		set_bit(BTN_TOOL_TRIPLETAP, dev1->keybit);
 		set_bit(BTN_TOOL_QUADTAP, dev1->keybit);
-		/* fall through */
-	case ALPS_PROTO_V4:
+
 		input_set_abs_params(dev1, ABS_X, 0, ALPS_V3_X_MAX, 0, 0);
 		input_set_abs_params(dev1, ABS_Y, 0, ALPS_V3_Y_MAX, 0, 0);
 		break;

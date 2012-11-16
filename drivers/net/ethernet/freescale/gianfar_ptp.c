@@ -478,7 +478,7 @@ static int gianfar_ptp_probe(struct platform_device *dev)
 		pr_err("no resource\n");
 		goto no_resource;
 	}
-	if (request_resource(&ioport_resource, etsects->rsrc)) {
+	if (request_resource(&iomem_resource, etsects->rsrc)) {
 		pr_err("resource busy\n");
 		goto no_resource;
 	}
@@ -510,11 +510,12 @@ static int gianfar_ptp_probe(struct platform_device *dev)
 
 	spin_unlock_irqrestore(&etsects->lock, flags);
 
-	etsects->clock = ptp_clock_register(&etsects->caps);
+	etsects->clock = ptp_clock_register(&etsects->caps, &dev->dev);
 	if (IS_ERR(etsects->clock)) {
 		err = PTR_ERR(etsects->clock);
 		goto no_clock;
 	}
+	gfar_phc_index = ptp_clock_index(etsects->clock);
 
 	dev_set_drvdata(&dev->dev, etsects);
 
@@ -538,6 +539,7 @@ static int gianfar_ptp_remove(struct platform_device *dev)
 	gfar_write(&etsects->regs->tmr_temask, 0);
 	gfar_write(&etsects->regs->tmr_ctrl,   0);
 
+	gfar_phc_index = -1;
 	ptp_clock_unregister(etsects->clock);
 	iounmap(etsects->regs);
 	release_resource(etsects->rsrc);
@@ -564,6 +566,6 @@ static struct platform_driver gianfar_ptp_driver = {
 
 module_platform_driver(gianfar_ptp_driver);
 
-MODULE_AUTHOR("Richard Cochran <richard.cochran@omicron.at>");
+MODULE_AUTHOR("Richard Cochran <richardcochran@gmail.com>");
 MODULE_DESCRIPTION("PTP clock using the eTSEC");
 MODULE_LICENSE("GPL");

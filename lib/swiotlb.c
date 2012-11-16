@@ -20,7 +20,7 @@
 #include <linux/cache.h>
 #include <linux/dma-mapping.h>
 #include <linux/mm.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/swiotlb.h>
@@ -130,11 +130,9 @@ void swiotlb_print_info(void)
 	pstart = virt_to_phys(io_tlb_start);
 	pend = virt_to_phys(io_tlb_end);
 
-	printk(KERN_INFO "Placing %luMB software IO TLB between %p - %p\n",
-	       bytes >> 20, io_tlb_start, io_tlb_end);
-	printk(KERN_INFO "software IO TLB at phys %#llx - %#llx\n",
-	       (unsigned long long)pstart,
-	       (unsigned long long)pend);
+	printk(KERN_INFO "software IO TLB [mem %#010llx-%#010llx] (%luMB) mapped at [%p-%p]\n",
+	       (unsigned long long)pstart, (unsigned long long)pend - 1,
+	       bytes >> 20, io_tlb_start, io_tlb_end - 1);
 }
 
 void __init swiotlb_init_with_tbl(char *tlb, unsigned long nslabs, int verbose)
@@ -172,7 +170,7 @@ void __init swiotlb_init_with_tbl(char *tlb, unsigned long nslabs, int verbose)
  * Statically reserve bounce buffer space and initialize bounce buffer data
  * structures for the software IO TLB used to implement the DMA API.
  */
-void __init
+static void __init
 swiotlb_init_with_default_size(size_t default_size, int verbose)
 {
 	unsigned long bytes;
@@ -208,8 +206,9 @@ swiotlb_init(int verbose)
 int
 swiotlb_late_init_with_default_size(size_t default_size)
 {
-	unsigned long i, bytes, req_nslabs = io_tlb_nslabs;
+	unsigned long bytes, req_nslabs = io_tlb_nslabs;
 	unsigned int order;
+	int rc = 0;
 
 	if (!io_tlb_nslabs) {
 		io_tlb_nslabs = (default_size >> IO_TLB_SHIFT);
@@ -231,16 +230,32 @@ swiotlb_late_init_with_default_size(size_t default_size)
 		order--;
 	}
 
-	if (!io_tlb_start)
-		goto cleanup1;
-
+	if (!io_tlb_start) {
+		io_tlb_nslabs = req_nslabs;
+		return -ENOMEM;
+	}
 	if (order != get_order(bytes)) {
 		printk(KERN_WARNING "Warning: only able to allocate %ld MB "
 		       "for software IO TLB\n", (PAGE_SIZE << order) >> 20);
 		io_tlb_nslabs = SLABS_PER_PAGE << order;
-		bytes = io_tlb_nslabs << IO_TLB_SHIFT;
 	}
+	rc = swiotlb_late_init_with_tbl(io_tlb_start, io_tlb_nslabs);
+	if (rc)
+		free_pages((unsigned long)io_tlb_start, order);
+	return rc;
+}
+
+int
+swiotlb_late_init_with_tbl(char *tlb, unsigned long nslabs)
+{
+	unsigned long i, bytes;
+
+	bytes = nslabs << IO_TLB_SHIFT;
+
+	io_tlb_nslabs = nslabs;
+	io_tlb_start = tlb;
 	io_tlb_end = io_tlb_start + bytes;
+
 	memset(io_tlb_start, 0, bytes);
 
 	/*
@@ -290,10 +305,8 @@ cleanup3:
 	io_tlb_list = NULL;
 cleanup2:
 	io_tlb_end = NULL;
-	free_pages((unsigned long)io_tlb_start, order);
 	io_tlb_start = NULL;
-cleanup1:
-	io_tlb_nslabs = req_nslabs;
+	io_tlb_nslabs = 0;
 	return -ENOMEM;
 }
 
@@ -349,13 +362,12 @@ void swiotlb_bounce(phys_addr_t phys, char *dma_addr, size_t size,
 			sz = min_t(size_t, PAGE_SIZE - offset, size);
 
 			local_irq_save(flags);
-			buffer = kmap_atomic(pfn_to_page(pfn),
-					     KM_BOUNCE_READ);
+			buffer = kmap_atomic(pfn_to_page(pfn));
 			if (dir == DMA_TO_DEVICE)
 				memcpy(dma_addr, buffer + offset, sz);
 			else
 				memcpy(buffer + offset, dma_addr, sz);
-			kunmap_atomic(buffer, KM_BOUNCE_READ);
+			kunmap_atomic(buffer);
 			local_irq_restore(flags);
 
 			size -= sz;

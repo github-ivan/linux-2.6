@@ -58,7 +58,7 @@ xen_free_irq_vector(int vector)
 
 	irq_op.vector = vector;
 	if (HYPERVISOR_physdev_op(PHYSDEVOP_free_irq_vector, &irq_op))
-		printk(KERN_WARNING "%s: xen_free_irq_vecotr fail vector=%d\n",
+		printk(KERN_WARNING "%s: xen_free_irq_vector fail vector=%d\n",
 		       __func__, vector);
 }
 
@@ -433,7 +433,7 @@ xen_resend_irq(unsigned int vector)
 	(void)resend_irq_on_evtchn(vector);
 }
 
-const struct pv_irq_ops xen_irq_ops __initdata = {
+const struct pv_irq_ops xen_irq_ops __initconst = {
 	.register_ipi = xen_register_ipi,
 
 	.assign_irq_vector = xen_assign_irq_vector,

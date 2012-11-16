@@ -1,24 +1,10 @@
 #ifndef _LINUX_BINFMTS_H
 #define _LINUX_BINFMTS_H
 
-#include <linux/capability.h>
-
-struct pt_regs;
-
-/*
- * These are the maximum length and maximum number of strings passed to the
- * execve() system call.  MAX_ARG_STRLEN is essentially random but serves to
- * prevent the kernel from being unduly impacted by misaddressed pointers.
- * MAX_ARG_STRINGS is chosen to fit in a signed 32-bit integer.
- */
-#define MAX_ARG_STRLEN (PAGE_SIZE * 32)
-#define MAX_ARG_STRINGS 0x7FFFFFFF
-
-/* sizeof(linux_binprm->buf) */
-#define BINPRM_BUF_SIZE 128
-
-#ifdef __KERNEL__
 #include <linux/sched.h>
+#include <linux/unistd.h>
+#include <asm/exec.h>
+#include <uapi/linux/binfmts.h>
 
 #define CORENAME_MAX_SIZE 128
 
@@ -72,7 +58,7 @@ struct linux_binprm {
 
 /* Function parameter for binfmt->coredump */
 struct coredump_params {
-	long signr;
+	siginfo_t *siginfo;
 	struct pt_regs *regs;
 	struct file *file;
 	unsigned long limit;
@@ -92,17 +78,17 @@ struct linux_binfmt {
 	unsigned long min_coredump;	/* minimal dump size */
 };
 
-extern int __register_binfmt(struct linux_binfmt *fmt, int insert);
+extern void __register_binfmt(struct linux_binfmt *fmt, int insert);
 
 /* Registration of default binfmt handlers */
-static inline int register_binfmt(struct linux_binfmt *fmt)
+static inline void register_binfmt(struct linux_binfmt *fmt)
 {
-	return __register_binfmt(fmt, 0);
+	__register_binfmt(fmt, 0);
 }
 /* Same as above, but adds a new binfmt at the top of the list */
-static inline int insert_binfmt(struct linux_binfmt *fmt)
+static inline void insert_binfmt(struct linux_binfmt *fmt)
 {
-	return __register_binfmt(fmt, 1);
+	__register_binfmt(fmt, 1);
 }
 
 extern void unregister_binfmt(struct linux_binfmt *);
@@ -132,9 +118,11 @@ extern int copy_strings_kernel(int argc, const char *const *argv,
 			       struct linux_binprm *bprm);
 extern int prepare_bprm_creds(struct linux_binprm *bprm);
 extern void install_exec_creds(struct linux_binprm *bprm);
-extern void do_coredump(long signr, int exit_code, struct pt_regs *regs);
 extern void set_binfmt(struct linux_binfmt *new);
 extern void free_bprm(struct linux_binprm *);
 
-#endif /* __KERNEL__ */
+#ifdef __ARCH_WANT_KERNEL_EXECVE
+extern void ret_from_kernel_execve(struct pt_regs *normal) __noreturn;
+#endif
+
 #endif /* _LINUX_BINFMTS_H */

@@ -25,33 +25,19 @@
 #include <linux/opp.h>
 #include <linux/cpu.h>
 #include <linux/module.h>
+#include <linux/regulator/consumer.h>
 
-#include <asm/system.h>
 #include <asm/smp_plat.h>
 #include <asm/cpu.h>
 
-#include <plat/clock.h>
-#include <plat/omap-pm.h>
-#include <plat/common.h>
-#include <plat/omap_device.h>
-
-#include <mach/hardware.h>
-
-#ifdef CONFIG_SMP
-struct lpj_info {
-	unsigned long	ref;
-	unsigned int	freq;
-};
-
-static DEFINE_PER_CPU(struct lpj_info, lpj_ref);
-static struct lpj_info global_lpj_ref;
-#endif
+/* OPP tolerance in percentage */
+#define	OPP_TOLERANCE	4
 
 static struct cpufreq_frequency_table *freq_table;
 static atomic_t freq_table_users = ATOMIC_INIT(0);
 static struct clk *mpu_clk;
-static char *mpu_clk_name;
 static struct device *mpu_dev;
+static struct regulator *mpu_reg;
 
 static int omap_verify_speed(struct cpufreq_policy *policy)
 {
@@ -76,8 +62,10 @@ static int omap_target(struct cpufreq_policy *policy,
 		       unsigned int relation)
 {
 	unsigned int i;
-	int ret = 0;
+	int r, ret = 0;
 	struct cpufreq_freqs freqs;
+	struct opp *opp;
+	unsigned long freq, volt = 0, volt_old = 0, tol = 0;
 
 	if (!freq_table) {
 		dev_err(mpu_dev, "%s: cpu%d: no freq table!\n", __func__,
@@ -111,39 +99,60 @@ static int omap_target(struct cpufreq_policy *policy,
 		cpufreq_notify_transition(&freqs, CPUFREQ_PRECHANGE);
 	}
 
-#ifdef CONFIG_CPU_FREQ_DEBUG
-	pr_info("cpufreq-omap: transition: %u --> %u\n", freqs.old, freqs.new);
-#endif
+	freq = freqs.new * 1000;
+	ret = clk_round_rate(mpu_clk, freq);
+	if (IS_ERR_VALUE(ret)) {
+		dev_warn(mpu_dev,
+			 "CPUfreq: Cannot find matching frequency for %lu\n",
+			 freq);
+		return ret;
+	}
+	freq = ret;
+
+	if (mpu_reg) {
+		opp = opp_find_freq_ceil(mpu_dev, &freq);
+		if (IS_ERR(opp)) {
+			dev_err(mpu_dev, "%s: unable to find MPU OPP for %d\n",
+				__func__, freqs.new);
+			return -EINVAL;
+		}
+		volt = opp_get_voltage(opp);
+		tol = volt * OPP_TOLERANCE / 100;
+		volt_old = regulator_get_voltage(mpu_reg);
+	}
+
+	dev_dbg(mpu_dev, "cpufreq-omap: %u MHz, %ld mV --> %u MHz, %ld mV\n", 
+		freqs.old / 1000, volt_old ? volt_old / 1000 : -1,
+		freqs.new / 1000, volt ? volt / 1000 : -1);
+
+	/* scaling up?  scale voltage before frequency */
+	if (mpu_reg && (freqs.new > freqs.old)) {
+		r = regulator_set_voltage(mpu_reg, volt - tol, volt + tol);
+		if (r < 0) {
+			dev_warn(mpu_dev, "%s: unable to scale voltage up.\n",
+				 __func__);
+			freqs.new = freqs.old;
+			goto done;
+		}
+	}
 
 	ret = clk_set_rate(mpu_clk, freqs.new * 1000);
+
+	/* scaling down?  scale voltage after frequency */
+	if (mpu_reg && (freqs.new < freqs.old)) {
+		r = regulator_set_voltage(mpu_reg, volt - tol, volt + tol);
+		if (r < 0) {
+			dev_warn(mpu_dev, "%s: unable to scale voltage down.\n",
+				 __func__);
+			ret = clk_set_rate(mpu_clk, freqs.old * 1000);
+			freqs.new = freqs.old;
+			goto done;
+		}
+	}
+
 	freqs.new = omap_getspeed(policy->cpu);
 
-#ifdef CONFIG_SMP
-	/*
-	 * Note that loops_per_jiffy is not updated on SMP systems in
-	 * cpufreq driver. So, update the per-CPU loops_per_jiffy value
-	 * on frequency transition. We need to update all dependent CPUs.
-	 */
-	for_each_cpu(i, policy->cpus) {
-		struct lpj_info *lpj = &per_cpu(lpj_ref, i);
-		if (!lpj->freq) {
-			lpj->ref = per_cpu(cpu_data, i).loops_per_jiffy;
-			lpj->freq = freqs.old;
-		}
-
-		per_cpu(cpu_data, i).loops_per_jiffy =
-			cpufreq_scale(lpj->ref, lpj->freq, freqs.new);
-	}
-
-	/* And don't forget to adjust the global one */
-	if (!global_lpj_ref.freq) {
-		global_lpj_ref.ref = loops_per_jiffy;
-		global_lpj_ref.freq = freqs.old;
-	}
-	loops_per_jiffy = cpufreq_scale(global_lpj_ref.ref, global_lpj_ref.freq,
-					freqs.new);
-#endif
-
+done:
 	/* notifiers */
 	for_each_cpu(i, policy->cpus) {
 		freqs.cpu = i;
@@ -163,7 +172,7 @@ static int __cpuinit omap_cpu_init(struct cpufreq_policy *policy)
 {
 	int result = 0;
 
-	mpu_clk = clk_get(NULL, mpu_clk_name);
+	mpu_clk = clk_get(NULL, "cpufreq_ck");
 	if (IS_ERR(mpu_clk))
 		return PTR_ERR(mpu_clk);
 
@@ -174,7 +183,7 @@ static int __cpuinit omap_cpu_init(struct cpufreq_policy *policy)
 
 	policy->cur = policy->min = policy->max = omap_getspeed(policy->cpu);
 
-	if (atomic_inc_return(&freq_table_users) == 1)
+	if (!freq_table)
 		result = opp_init_cpufreq_table(mpu_dev, &freq_table);
 
 	if (result) {
@@ -182,6 +191,8 @@ static int __cpuinit omap_cpu_init(struct cpufreq_policy *policy)
 				__func__, policy->cpu, result);
 		goto fail_ck;
 	}
+
+	atomic_inc_return(&freq_table_users);
 
 	result = cpufreq_frequency_table_cpuinfo(policy, freq_table);
 	if (result)
@@ -242,22 +253,27 @@ static struct cpufreq_driver omap_driver = {
 
 static int __init omap_cpufreq_init(void)
 {
-	if (cpu_is_omap24xx())
-		mpu_clk_name = "virt_prcm_set";
-	else if (cpu_is_omap34xx())
-		mpu_clk_name = "dpll1_ck";
-	else if (cpu_is_omap44xx())
-		mpu_clk_name = "dpll_mpu_ck";
-
-	if (!mpu_clk_name) {
-		pr_err("%s: unsupported Silicon?\n", __func__);
-		return -EINVAL;
-	}
-
-	mpu_dev = omap_device_get_by_hwmod_name("mpu");
+	mpu_dev = get_cpu_device(0);
 	if (!mpu_dev) {
 		pr_warning("%s: unable to get the mpu device\n", __func__);
 		return -EINVAL;
+	}
+
+	mpu_reg = regulator_get(mpu_dev, "vcc");
+	if (IS_ERR(mpu_reg)) {
+		pr_warning("%s: unable to get MPU regulator\n", __func__);
+		mpu_reg = NULL;
+	} else {
+		/* 
+		 * Ensure physical regulator is present.
+		 * (e.g. could be dummy regulator.)
+		 */
+		if (regulator_get_voltage(mpu_reg) < 0) {
+			pr_warn("%s: physical regulator not present for MPU\n",
+				__func__);
+			regulator_put(mpu_reg);
+			mpu_reg = NULL;
+		}
 	}
 
 	return cpufreq_register_driver(&omap_driver);

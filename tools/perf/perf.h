@@ -10,6 +10,9 @@ void get_term_dimensions(struct winsize *ws);
 #define rmb()		asm volatile("lock; addl $0,0(%%esp)" ::: "memory")
 #define cpu_relax()	asm volatile("rep; nop" ::: "memory");
 #define CPUINFO_PROC	"model name"
+#ifndef __NR_perf_event_open
+# define __NR_perf_event_open 336
+#endif
 #endif
 
 #if defined(__x86_64__)
@@ -17,6 +20,9 @@ void get_term_dimensions(struct winsize *ws);
 #define rmb()		asm volatile("lfence" ::: "memory")
 #define cpu_relax()	asm volatile("rep; nop" ::: "memory");
 #define CPUINFO_PROC	"model name"
+#ifndef __NR_perf_event_open
+# define __NR_perf_event_open 298
+#endif
 #endif
 
 #ifdef __powerpc__
@@ -51,7 +57,7 @@ void get_term_dimensions(struct winsize *ws);
 #endif
 
 #ifdef __sparc__
-#include "../../arch/sparc/include/asm/unistd.h"
+#include "../../arch/sparc/include/uapi/asm/unistd.h"
 #define rmb()		asm volatile("":::"memory")
 #define cpu_relax()	asm volatile("":::"memory")
 #define CPUINFO_PROC	"cpu"
@@ -82,6 +88,12 @@ void get_term_dimensions(struct winsize *ws);
 #define CPUINFO_PROC	"Processor"
 #endif
 
+#ifdef __aarch64__
+#include "../../arch/arm64/include/asm/unistd.h"
+#define rmb()		asm volatile("dmb ld" ::: "memory")
+#define cpu_relax()	asm volatile("yield" ::: "memory")
+#endif
+
 #ifdef __mips__
 #include "../../arch/mips/include/asm/unistd.h"
 #define rmb()		asm volatile(					\
@@ -100,7 +112,7 @@ void get_term_dimensions(struct winsize *ws);
 #include <sys/types.h>
 #include <sys/syscall.h>
 
-#include "../../include/linux/perf_event.h"
+#include "../../include/uapi/linux/perf_event.h"
 #include "util/types.h"
 #include <stdbool.h>
 
@@ -167,7 +179,6 @@ sys_perf_event_open(struct perf_event_attr *attr,
 		      pid_t pid, int cpu, int group_fd,
 		      unsigned long flags)
 {
-	attr->size = sizeof(*attr);
 	return syscall(__NR_perf_event_open, attr, pid, cpu,
 		       group_fd, flags);
 }
@@ -180,15 +191,39 @@ struct ip_callchain {
 	u64 ips[0];
 };
 
+struct branch_flags {
+	u64 mispred:1;
+	u64 predicted:1;
+	u64 reserved:62;
+};
+
+struct branch_entry {
+	u64				from;
+	u64				to;
+	struct branch_flags flags;
+};
+
+struct branch_stack {
+	u64				nr;
+	struct branch_entry	entries[0];
+};
+
 extern bool perf_host, perf_guest;
 extern const char perf_version_string[];
 
 void pthread__unblock_sigwinch(void);
 
+#include "util/target.h"
+
+enum perf_call_graph_mode {
+	CALLCHAIN_NONE,
+	CALLCHAIN_FP,
+	CALLCHAIN_DWARF
+};
+
 struct perf_record_opts {
-	pid_t	     target_pid;
-	pid_t	     target_tid;
-	bool	     call_graph;
+	struct perf_target target;
+	int	     call_graph;
 	bool	     group;
 	bool	     inherit_stat;
 	bool	     no_delay;
@@ -198,15 +233,16 @@ struct perf_record_opts {
 	bool	     raw_samples;
 	bool	     sample_address;
 	bool	     sample_time;
-	bool	     sample_id_all_avail;
-	bool	     system_wide;
+	bool	     sample_id_all_missing;
+	bool	     exclude_guest_missing;
 	bool	     period;
 	unsigned int freq;
 	unsigned int mmap_pages;
 	unsigned int user_freq;
+	u64          branch_stack;
 	u64	     default_interval;
 	u64	     user_interval;
-	const char   *cpu_list;
+	u16	     stack_dump_size;
 };
 
 #endif

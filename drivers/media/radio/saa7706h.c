@@ -199,8 +199,19 @@ static int saa7706h_get_reg16(struct v4l2_subdev *sd, u16 reg)
 	u8 buf[2];
 	int err;
 	u8 regaddr[] = {reg >> 8, reg};
-	struct i2c_msg msg[] = { {client->addr, 0, sizeof(regaddr), regaddr},
-				{client->addr, I2C_M_RD, sizeof(buf), buf} };
+	struct i2c_msg msg[] = {
+					{
+						.addr = client->addr,
+						.len = sizeof(regaddr),
+						.buf = regaddr
+					},
+					{
+						.addr = client->addr,
+						.flags = I2C_M_RD,
+						.len = sizeof(buf),
+						.buf = buf
+					}
+				};
 
 	err = saa7706h_i2c_transfer(client, msg, ARRAY_SIZE(msg));
 	if (err)
@@ -430,22 +441,11 @@ static struct i2c_driver saa7706h_driver = {
 		.name	= DRIVER_NAME,
 	},
 	.probe		= saa7706h_probe,
-	.remove		= saa7706h_remove,
+	.remove		= __devexit_p(saa7706h_remove),
 	.id_table	= saa7706h_id,
 };
 
-static __init int saa7706h_init(void)
-{
-	return i2c_add_driver(&saa7706h_driver);
-}
-
-static __exit void saa7706h_exit(void)
-{
-	i2c_del_driver(&saa7706h_driver);
-}
-
-module_init(saa7706h_init);
-module_exit(saa7706h_exit);
+module_i2c_driver(saa7706h_driver);
 
 MODULE_DESCRIPTION("SAA7706H Car Radio DSP driver");
 MODULE_AUTHOR("Mocean Laboratories");

@@ -45,6 +45,8 @@ int _drm_gem_create_mmap_offset_size(struct drm_gem_object *obj, size_t size);
 struct omap_gem_object {
 	struct drm_gem_object base;
 
+	struct list_head mm_list;
+
 	uint32_t flags;
 
 	/** width/height for tiled formats (rounded up to slot boundaries) */
@@ -151,10 +153,23 @@ static void evict_entry(struct drm_gem_object *obj,
 		enum tiler_fmt fmt, struct usergart_entry *entry)
 {
 	if (obj->dev->dev_mapping) {
-		size_t size = PAGE_SIZE * usergart[fmt].height;
+		struct omap_gem_object *omap_obj = to_omap_bo(obj);
+		int n = usergart[fmt].height;
+		size_t size = PAGE_SIZE * n;
 		loff_t off = mmap_offset(obj) +
 				(entry->obj_pgoff << PAGE_SHIFT);
-		unmap_mapping_range(obj->dev->dev_mapping, off, size, 1);
+		const int m = 1 + ((omap_obj->width << fmt) / PAGE_SIZE);
+		if (m > 1) {
+			int i;
+			/* if stride > than PAGE_SIZE then sparse mapping: */
+			for (i = n; i > 0; i--) {
+				unmap_mapping_range(obj->dev->dev_mapping,
+						off, PAGE_SIZE, 1);
+				off += PAGE_SIZE * m;
+			}
+		} else {
+			unmap_mapping_range(obj->dev->dev_mapping, off, size, 1);
+		}
 	}
 
 	entry->obj = NULL;
@@ -192,13 +207,28 @@ static inline bool is_shmem(struct drm_gem_object *obj)
 	return obj->filp != NULL;
 }
 
+/**
+ * shmem buffers that are mapped cached can simulate coherency via using
+ * page faulting to keep track of dirty pages
+ */
+static inline bool is_cached_coherent(struct drm_gem_object *obj)
+{
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
+	return is_shmem(obj) &&
+		((omap_obj->flags & OMAP_BO_CACHE_MASK) == OMAP_BO_CACHED);
+}
+
 static DEFINE_SPINLOCK(sync_lock);
 
 /** ensure backing pages are allocated */
 static int omap_gem_attach_pages(struct drm_gem_object *obj)
 {
+	struct drm_device *dev = obj->dev;
 	struct omap_gem_object *omap_obj = to_omap_bo(obj);
 	struct page **pages;
+	int npages = obj->size >> PAGE_SHIFT;
+	int i, ret;
+	dma_addr_t *addrs;
 
 	WARN_ON(omap_obj->pages);
 
@@ -216,17 +246,33 @@ static int omap_gem_attach_pages(struct drm_gem_object *obj)
 	 * DSS, GPU, etc. are not cache coherent:
 	 */
 	if (omap_obj->flags & (OMAP_BO_WC|OMAP_BO_UNCACHED)) {
-		int i, npages = obj->size >> PAGE_SHIFT;
-		dma_addr_t *addrs = kmalloc(npages * sizeof(addrs), GFP_KERNEL);
+		addrs = kmalloc(npages * sizeof(*addrs), GFP_KERNEL);
+		if (!addrs) {
+			ret = -ENOMEM;
+			goto free_pages;
+		}
+
 		for (i = 0; i < npages; i++) {
-			addrs[i] = dma_map_page(obj->dev->dev, pages[i],
+			addrs[i] = dma_map_page(dev->dev, pages[i],
 					0, PAGE_SIZE, DMA_BIDIRECTIONAL);
 		}
-		omap_obj->addrs = addrs;
+	} else {
+		addrs = kzalloc(npages * sizeof(*addrs), GFP_KERNEL);
+		if (!addrs) {
+			ret = -ENOMEM;
+			goto free_pages;
+		}
 	}
 
+	omap_obj->addrs = addrs;
 	omap_obj->pages = pages;
+
 	return 0;
+
+free_pages:
+	_drm_gem_put_pages(obj, pages, true, false);
+
+	return ret;
 }
 
 /** release backing pages */
@@ -243,24 +289,35 @@ static void omap_gem_detach_pages(struct drm_gem_object *obj)
 			dma_unmap_page(obj->dev->dev, omap_obj->addrs[i],
 					PAGE_SIZE, DMA_BIDIRECTIONAL);
 		}
-		kfree(omap_obj->addrs);
-		omap_obj->addrs = NULL;
 	}
+
+	kfree(omap_obj->addrs);
+	omap_obj->addrs = NULL;
 
 	_drm_gem_put_pages(obj, omap_obj->pages, true, false);
 	omap_obj->pages = NULL;
 }
 
+/* get buffer flags */
+uint32_t omap_gem_flags(struct drm_gem_object *obj)
+{
+	return to_omap_bo(obj)->flags;
+}
+
 /** get mmap offset */
 static uint64_t mmap_offset(struct drm_gem_object *obj)
 {
+	struct drm_device *dev = obj->dev;
+
+	WARN_ON(!mutex_is_locked(&dev->struct_mutex));
+
 	if (!obj->map_list.map) {
 		/* Make it mmapable */
 		size_t size = omap_gem_mmap_size(obj);
 		int ret = _drm_gem_create_mmap_offset_size(obj, size);
 
 		if (ret) {
-			dev_err(obj->dev->dev, "could not allocate mmap offset");
+			dev_err(dev->dev, "could not allocate mmap offset\n");
 			return 0;
 		}
 	}
@@ -297,6 +354,17 @@ size_t omap_gem_mmap_size(struct drm_gem_object *obj)
 	return size;
 }
 
+/* get tiled size, returns -EINVAL if not tiled buffer */
+int omap_gem_tiled_size(struct drm_gem_object *obj, uint16_t *w, uint16_t *h)
+{
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
+	if (omap_obj->flags & OMAP_BO_TILED) {
+		*w = omap_obj->width;
+		*h = omap_obj->height;
+		return 0;
+	}
+	return -EINVAL;
+}
 
 /* Normal handling for the case of faulting in non-tiled buffers */
 static int fault_1d(struct drm_gem_object *obj,
@@ -311,6 +379,7 @@ static int fault_1d(struct drm_gem_object *obj,
 			vma->vm_start) >> PAGE_SHIFT;
 
 	if (omap_obj->pages) {
+		omap_gem_cpu_sync(obj, pgoff);
 		pfn = page_to_pfn(omap_obj->pages[pgoff]);
 	} else {
 		BUG_ON(!(omap_obj->flags & OMAP_BO_DMA));
@@ -336,25 +405,38 @@ static int fault_2d(struct drm_gem_object *obj,
 	void __user *vaddr;
 	int i, ret, slots;
 
-	if (!usergart)
-		return -EFAULT;
-
-	/* TODO: this fxn might need a bit tweaking to deal w/ tiled buffers
-	 * that are wider than 4kb
+	/*
+	 * Note the height of the slot is also equal to the number of pages
+	 * that need to be mapped in to fill 4kb wide CPU page.  If the slot
+	 * height is 64, then 64 pages fill a 4kb wide by 64 row region.
 	 */
+	const int n = usergart[fmt].height;
+	const int n_shift = usergart[fmt].height_shift;
+
+	/*
+	 * If buffer width in bytes > PAGE_SIZE then the virtual stride is
+	 * rounded up to next multiple of PAGE_SIZE.. this need to be taken
+	 * into account in some of the math, so figure out virtual stride
+	 * in pages
+	 */
+	const int m = 1 + ((omap_obj->width << fmt) / PAGE_SIZE);
 
 	/* We don't use vmf->pgoff since that has the fake offset: */
 	pgoff = ((unsigned long)vmf->virtual_address -
 			vma->vm_start) >> PAGE_SHIFT;
 
-	/* actual address we start mapping at is rounded down to previous slot
+	/*
+	 * Actual address we start mapping at is rounded down to previous slot
 	 * boundary in the y direction:
 	 */
-	base_pgoff = round_down(pgoff, usergart[fmt].height);
-	vaddr = vmf->virtual_address - ((pgoff - base_pgoff) << PAGE_SHIFT);
-	entry = &usergart[fmt].entry[usergart[fmt].last];
+	base_pgoff = round_down(pgoff, m << n_shift);
 
+	/* figure out buffer width in slots */
 	slots = omap_obj->width >> usergart[fmt].slot_shift;
+
+	vaddr = vmf->virtual_address - ((pgoff - base_pgoff) << PAGE_SHIFT);
+
+	entry = &usergart[fmt].entry[usergart[fmt].last];
 
 	/* evict previous buffer using this usergart entry, if any: */
 	if (entry->obj)
@@ -363,23 +445,30 @@ static int fault_2d(struct drm_gem_object *obj,
 	entry->obj = obj;
 	entry->obj_pgoff = base_pgoff;
 
-	/* now convert base_pgoff to phys offset from virt offset:
-	 */
-	base_pgoff = (base_pgoff >> usergart[fmt].height_shift) * slots;
+	/* now convert base_pgoff to phys offset from virt offset: */
+	base_pgoff = (base_pgoff >> n_shift) * slots;
 
-	/* map in pages.  Note the height of the slot is also equal to the
-	 * number of pages that need to be mapped in to fill 4kb wide CPU page.
-	 * If the height is 64, then 64 pages fill a 4kb wide by 64 row region.
-	 * Beyond the valid pixel part of the buffer, we set pages[i] to NULL to
-	 * get a dummy page mapped in.. if someone reads/writes it they will get
-	 * random/undefined content, but at least it won't be corrupting
-	 * whatever other random page used to be mapped in, or other undefined
-	 * behavior.
+	/* for wider-than 4k.. figure out which part of the slot-row we want: */
+	if (m > 1) {
+		int off = pgoff % m;
+		entry->obj_pgoff += off;
+		base_pgoff /= m;
+		slots = min(slots - (off << n_shift), n);
+		base_pgoff += off << n_shift;
+		vaddr += off << PAGE_SHIFT;
+	}
+
+	/*
+	 * Map in pages. Beyond the valid pixel part of the buffer, we set
+	 * pages[i] to NULL to get a dummy page mapped in.. if someone
+	 * reads/writes it they will get random/undefined content, but at
+	 * least it won't be corrupting whatever other random page used to
+	 * be mapped in, or other undefined behavior.
 	 */
 	memcpy(pages, &omap_obj->pages[base_pgoff],
 			sizeof(struct page *) * slots);
 	memset(pages + slots, 0,
-			sizeof(struct page *) * (usergart[fmt].height - slots));
+			sizeof(struct page *) * (n - slots));
 
 	ret = tiler_pin(entry->block, pages, ARRAY_SIZE(pages), 0, true);
 	if (ret) {
@@ -387,16 +476,15 @@ static int fault_2d(struct drm_gem_object *obj,
 		return ret;
 	}
 
-	i = usergart[fmt].height;
 	pfn = entry->paddr >> PAGE_SHIFT;
 
 	VERB("Inserting %p pfn %lx, pa %lx", vmf->virtual_address,
 			pfn, pfn << PAGE_SHIFT);
 
-	while (i--) {
+	for (i = n; i > 0; i--) {
 		vm_insert_mixed(vma, (unsigned long)vaddr, pfn);
 		pfn += usergart[fmt].stride_pfn;
-		vaddr += PAGE_SIZE;
+		vaddr += PAGE_SIZE * m;
 	}
 
 	/* simple round-robin: */
@@ -466,7 +554,6 @@ fail:
 /** We override mainly to fix up some of the vm mapping flags.. */
 int omap_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	struct omap_gem_object *omap_obj;
 	int ret;
 
 	ret = drm_gem_mmap(filp, vma);
@@ -475,8 +562,13 @@ int omap_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 		return ret;
 	}
 
-	/* after drm_gem_mmap(), it is safe to access the obj */
-	omap_obj = to_omap_bo(vma->vm_private_data);
+	return omap_gem_mmap_obj(vma->vm_private_data, vma);
+}
+
+int omap_gem_mmap_obj(struct drm_gem_object *obj,
+		struct vm_area_struct *vma)
+{
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
 
 	vma->vm_flags &= ~VM_PFNMAP;
 	vma->vm_flags |= VM_MIXEDMAP;
@@ -486,11 +578,29 @@ int omap_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 	} else if (omap_obj->flags & OMAP_BO_UNCACHED) {
 		vma->vm_page_prot = pgprot_noncached(vm_get_page_prot(vma->vm_flags));
 	} else {
+		/*
+		 * We do have some private objects, at least for scanout buffers
+		 * on hardware without DMM/TILER.  But these are allocated write-
+		 * combine
+		 */
+		if (WARN_ON(!obj->filp))
+			return -EINVAL;
+
+		/*
+		 * Shunt off cached objs to shmem file so they have their own
+		 * address_space (so unmap_mapping_range does what we want,
+		 * in particular in the case of mmap'd dmabufs)
+		 */
+		fput(vma->vm_file);
+		vma->vm_pgoff = 0;
+		vma->vm_file  = get_file(obj->filp);
+
 		vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 	}
 
-	return ret;
+	return 0;
 }
+
 
 /**
  * omap_gem_dumb_create	-	create a dumb buffer
@@ -566,6 +676,8 @@ fail:
 
 /* Set scrolling position.  This allows us to implement fast scrolling
  * for console.
+ *
+ * Call only from non-atomic contexts.
  */
 int omap_gem_roll(struct drm_gem_object *obj, uint32_t roll)
 {
@@ -579,18 +691,6 @@ int omap_gem_roll(struct drm_gem_object *obj, uint32_t roll)
 	}
 
 	omap_obj->roll = roll;
-
-	if (in_atomic() || mutex_is_locked(&obj->dev->struct_mutex)) {
-		/* this can get called from fbcon in atomic context.. so
-		 * just ignore it and wait for next time called from
-		 * interruptible context to update the PAT.. the result
-		 * may be that user sees wrap-around instead of scrolling
-		 * momentarily on the screen.  If we wanted to be fancier
-		 * we could perhaps schedule some workqueue work at this
-		 * point.
-		 */
-		return 0;
-	}
 
 	mutex_lock(&obj->dev->struct_mutex);
 
@@ -609,6 +709,48 @@ fail:
 	mutex_unlock(&obj->dev->struct_mutex);
 
 	return ret;
+}
+
+/* Sync the buffer for CPU access.. note pages should already be
+ * attached, ie. omap_gem_get_pages()
+ */
+void omap_gem_cpu_sync(struct drm_gem_object *obj, int pgoff)
+{
+	struct drm_device *dev = obj->dev;
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
+
+	if (is_cached_coherent(obj) && omap_obj->addrs[pgoff]) {
+		dma_unmap_page(dev->dev, omap_obj->addrs[pgoff],
+				PAGE_SIZE, DMA_BIDIRECTIONAL);
+		omap_obj->addrs[pgoff] = 0;
+	}
+}
+
+/* sync the buffer for DMA access */
+void omap_gem_dma_sync(struct drm_gem_object *obj,
+		enum dma_data_direction dir)
+{
+	struct drm_device *dev = obj->dev;
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
+
+	if (is_cached_coherent(obj)) {
+		int i, npages = obj->size >> PAGE_SHIFT;
+		struct page **pages = omap_obj->pages;
+		bool dirty = false;
+
+		for (i = 0; i < npages; i++) {
+			if (!omap_obj->addrs[i]) {
+				omap_obj->addrs[i] = dma_map_page(dev->dev, pages[i], 0,
+						PAGE_SIZE, DMA_BIDIRECTIONAL);
+				dirty = true;
+			}
+		}
+
+		if (dirty) {
+			unmap_mapping_range(obj->filp->f_mapping, 0,
+					omap_gem_mmap_size(obj), 1);
+		}
+	}
 }
 
 /* Get physical address for DMA.. if 'remap' is true, and the buffer is not
@@ -675,6 +817,7 @@ int omap_gem_get_paddr(struct drm_gem_object *obj,
 		*paddr = omap_obj->paddr;
 	} else {
 		ret = -EINVAL;
+		goto fail;
 	}
 
 fail:
@@ -714,6 +857,36 @@ fail:
 	return ret;
 }
 
+/* Get rotated scanout address (only valid if already pinned), at the
+ * specified orientation and x,y offset from top-left corner of buffer
+ * (only valid for tiled 2d buffers)
+ */
+int omap_gem_rotated_paddr(struct drm_gem_object *obj, uint32_t orient,
+		int x, int y, dma_addr_t *paddr)
+{
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
+	int ret = -EINVAL;
+
+	mutex_lock(&obj->dev->struct_mutex);
+	if ((omap_obj->paddr_cnt > 0) && omap_obj->block &&
+			(omap_obj->flags & OMAP_BO_TILED)) {
+		*paddr = tiler_tsptr(omap_obj->block, orient, x, y);
+		ret = 0;
+	}
+	mutex_unlock(&obj->dev->struct_mutex);
+	return ret;
+}
+
+/* Get tiler stride for the buffer (only valid for 2d tiled buffers) */
+int omap_gem_tiled_stride(struct drm_gem_object *obj, uint32_t orient)
+{
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
+	int ret = -EINVAL;
+	if (omap_obj->flags & OMAP_BO_TILED)
+		ret = tiler_stride(gem2fmt(omap_obj->flags), orient);
+	return ret;
+}
+
 /* acquire pages when needed (for example, for DMA where physically
  * contiguous buffer is not required
  */
@@ -736,9 +909,27 @@ static int get_pages(struct drm_gem_object *obj, struct page ***pages)
 	return 0;
 }
 
-int omap_gem_get_pages(struct drm_gem_object *obj, struct page ***pages)
+/* if !remap, and we don't have pages backing, then fail, rather than
+ * increasing the pin count (which we don't really do yet anyways,
+ * because we don't support swapping pages back out).  And 'remap'
+ * might not be quite the right name, but I wanted to keep it working
+ * similarly to omap_gem_get_paddr().  Note though that mutex is not
+ * aquired if !remap (because this can be called in atomic ctxt),
+ * but probably omap_gem_get_paddr() should be changed to work in the
+ * same way.  If !remap, a matching omap_gem_put_pages() call is not
+ * required (and should not be made).
+ */
+int omap_gem_get_pages(struct drm_gem_object *obj, struct page ***pages,
+		bool remap)
 {
 	int ret;
+	if (!remap) {
+		struct omap_gem_object *omap_obj = to_omap_bo(obj);
+		if (!omap_obj->pages)
+			return -ENOMEM;
+		*pages = omap_obj->pages;
+		return 0;
+	}
 	mutex_lock(&obj->dev->struct_mutex);
 	ret = get_pages(obj, pages);
 	mutex_unlock(&obj->dev->struct_mutex);
@@ -773,6 +964,56 @@ void *omap_gem_vaddr(struct drm_gem_object *obj)
 	}
 	return omap_obj->vaddr;
 }
+
+#ifdef CONFIG_DEBUG_FS
+void omap_gem_describe(struct drm_gem_object *obj, struct seq_file *m)
+{
+	struct drm_device *dev = obj->dev;
+	struct omap_gem_object *omap_obj = to_omap_bo(obj);
+	uint64_t off = 0;
+
+	WARN_ON(! mutex_is_locked(&dev->struct_mutex));
+
+	if (obj->map_list.map)
+		off = (uint64_t)obj->map_list.hash.key;
+
+	seq_printf(m, "%08x: %2d (%2d) %08llx %08Zx (%2d) %p %4d",
+			omap_obj->flags, obj->name, obj->refcount.refcount.counter,
+			off, omap_obj->paddr, omap_obj->paddr_cnt,
+			omap_obj->vaddr, omap_obj->roll);
+
+	if (omap_obj->flags & OMAP_BO_TILED) {
+		seq_printf(m, " %dx%d", omap_obj->width, omap_obj->height);
+		if (omap_obj->block) {
+			struct tcm_area *area = &omap_obj->block->area;
+			seq_printf(m, " (%dx%d, %dx%d)",
+					area->p0.x, area->p0.y,
+					area->p1.x, area->p1.y);
+		}
+	} else {
+		seq_printf(m, " %d", obj->size);
+	}
+
+	seq_printf(m, "\n");
+}
+
+void omap_gem_describe_objects(struct list_head *list, struct seq_file *m)
+{
+	struct omap_gem_object *omap_obj;
+	int count = 0;
+	size_t size = 0;
+
+	list_for_each_entry(omap_obj, list, mm_list) {
+		struct drm_gem_object *obj = &omap_obj->base;
+		seq_printf(m, "   ");
+		omap_gem_describe(obj, m);
+		count++;
+		size += obj->size;
+	}
+
+	seq_printf(m, "Total %d objects, %zu bytes\n", count, size);
+}
+#endif
 
 /* Buffer Synchronization:
  */
@@ -1040,6 +1281,10 @@ void omap_gem_free_object(struct drm_gem_object *obj)
 
 	evict(obj);
 
+	WARN_ON(!mutex_is_locked(&dev->struct_mutex));
+
+	list_del(&omap_obj->mm_list);
+
 	if (obj->map_list.map) {
 		drm_gem_free_mmap_offset(obj);
 	}
@@ -1140,6 +1385,8 @@ struct drm_gem_object *omap_gem_new(struct drm_device *dev,
 		goto fail;
 	}
 
+	list_add(&omap_obj->mm_list, &priv->obj_list);
+
 	obj = &omap_obj->base;
 
 	if ((flags & OMAP_BO_SCANOUT) && !priv->has_dmm) {
@@ -1186,12 +1433,11 @@ void omap_gem_init(struct drm_device *dev)
 	const enum tiler_fmt fmts[] = {
 			TILFMT_8BIT, TILFMT_16BIT, TILFMT_32BIT
 	};
-	int i, j, ret;
+	int i, j;
 
-	ret = omap_dmm_init(dev);
-	if (ret) {
+	if (!dmm_is_initialized()) {
 		/* DMM only supported on OMAP4 and later, so this isn't fatal */
-		dev_warn(dev->dev, "omap_dmm_init failed, disabling DMM\n");
+		dev_warn(dev->dev, "DMM not available, disable DMM support\n");
 		return;
 	}
 
@@ -1211,7 +1457,7 @@ void omap_gem_init(struct drm_device *dev)
 		 */
 		usergart[i].height = h;
 		usergart[i].height_shift = ilog2(h);
-		usergart[i].stride_pfn = tiler_stride(fmts[i]) >> PAGE_SHIFT;
+		usergart[i].stride_pfn = tiler_stride(fmts[i], 0) >> PAGE_SHIFT;
 		usergart[i].slot_shift = ilog2((PAGE_SIZE / h) >> i);
 		for (j = 0; j < NUM_USERGART_ENTRIES; j++) {
 			struct usergart_entry *entry = &usergart[i].entry[j];
@@ -1241,6 +1487,5 @@ void omap_gem_deinit(struct drm_device *dev)
 	/* I believe we can rely on there being no more outstanding GEM
 	 * objects which could depend on usergart/dmm at this point.
 	 */
-	omap_dmm_remove();
 	kfree(usergart);
 }

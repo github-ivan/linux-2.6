@@ -155,7 +155,7 @@ static int tweak_set_configuration_cmd(struct urb *urb)
 	 * eventually reassigned to the device as far as driver matching
 	 * condition is kept.
 	 *
-	 * Unfortunatelly, an existing usbip connection will be dropped
+	 * Unfortunately, an existing usbip connection will be dropped
 	 * due to this driver unbinding. So, skip here.
 	 * A user may need to set a special configuration value before
 	 * exporting the device.
@@ -367,15 +367,6 @@ static int get_pipe(struct stub_device *sdev, int epnum, int dir)
 	}
 
 	epd = &ep->desc;
-#if 0
-	/* epnum 0 is always control */
-	if (epnum == 0) {
-		if (dir == USBIP_DIR_OUT)
-			return usb_sndctrlpipe(udev, 0);
-		else
-			return usb_rcvctrlpipe(udev, 0);
-	}
-#endif
 	if (usb_endpoint_xfer_control(epd)) {
 		if (dir == USBIP_DIR_OUT)
 			return usb_sndctrlpipe(udev, epnum);

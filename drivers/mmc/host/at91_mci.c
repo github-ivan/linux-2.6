@@ -86,7 +86,6 @@ static inline int at91mci_is_mci1rev2xx(void)
 {
 	return (   cpu_is_at91sam9260()
 		|| cpu_is_at91sam9263()
-		|| cpu_is_at91cap9()
 		|| cpu_is_at91sam9rl()
 		|| cpu_is_at91sam9g10()
 		|| cpu_is_at91sam9g20()
@@ -357,7 +356,7 @@ static void at91_mci_handle_transmitted(struct at91mci_host *host)
 }
 
 /*
- * Update bytes tranfered count during a write operation
+ * Update bytes transfered count during a write operation
  */
 static void at91_mci_update_bytes_xfered(struct at91mci_host *host)
 {

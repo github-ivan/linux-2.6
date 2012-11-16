@@ -1,5 +1,5 @@
 /*
-	drivers/net/tulip/eeprom.c
+	drivers/net/ethernet/dec/tulip/eeprom.c
 
 	Copyright 2000,2001  The Linux Kernel Team
 	Written/copyright 1994-2001 by Donald Becker.
@@ -79,7 +79,7 @@ static struct eeprom_fixup eeprom_fixups[] __devinitdata = {
   {NULL}};
 
 
-static const char *block_name[] __devinitdata = {
+static const char *const block_name[] __devinitconst = {
 	"21140 non-MII",
 	"21140 MII PHY",
 	"21142 Serial PHY",

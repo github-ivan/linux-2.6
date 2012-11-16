@@ -30,7 +30,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
 #include <linux/pfn.h>
-#include <mach/usb.h>
+#include <linux/platform_data/usb-musb-ux500.h>
 #include "musb_core.h"
 
 struct ux500_dma_channel {
@@ -115,12 +115,12 @@ static bool ux500_configure_channel(struct dma_channel *channel,
 	slave_conf.dst_addr = usb_fifo_addr;
 	slave_conf.dst_addr_width = addr_width;
 	slave_conf.dst_maxburst = 16;
+	slave_conf.device_fc = false;
 
 	dma_chan->device->device_control(dma_chan, DMA_SLAVE_CONFIG,
 					     (unsigned long) &slave_conf);
 
-	dma_desc = dma_chan->device->
-			device_prep_slave_sg(dma_chan, &sg, 1, direction,
+	dma_desc = dmaengine_prep_slave_sg(dma_chan, &sg, 1, direction,
 					     DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 	if (!dma_desc)
 		return false;
@@ -364,7 +364,7 @@ void dma_controller_destroy(struct dma_controller *c)
 	kfree(controller);
 }
 
-struct dma_controller *__init
+struct dma_controller *__devinit
 dma_controller_create(struct musb *musb, void __iomem *base)
 {
 	struct ux500_dma_controller *controller;

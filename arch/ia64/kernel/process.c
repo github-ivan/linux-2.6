@@ -29,6 +29,7 @@
 #include <linux/kdebug.h>
 #include <linux/utsname.h>
 #include <linux/tracehook.h>
+#include <linux/rcupdate.h>
 
 #include <asm/cpu.h>
 #include <asm/delay.h>
@@ -38,6 +39,7 @@
 #include <asm/pgalloc.h>
 #include <asm/processor.h>
 #include <asm/sal.h>
+#include <asm/switch_to.h>
 #include <asm/tlbflush.h>
 #include <asm/uaccess.h>
 #include <asm/unwind.h>
@@ -195,11 +197,9 @@ do_notify_resume_user(sigset_t *unused, struct sigscratch *scr, long in_syscall)
 		ia64_do_signal(scr, in_syscall);
 	}
 
-	if (test_thread_flag(TIF_NOTIFY_RESUME)) {
-		clear_thread_flag(TIF_NOTIFY_RESUME);
+	if (test_and_clear_thread_flag(TIF_NOTIFY_RESUME)) {
+		local_irq_enable();	/* force interrupt enable */
 		tracehook_notify_resume(&scr->pt);
-		if (current->replacement_session_keyring)
-			key_replace_session_keyring();
 	}
 
 	/* copy user rbs to kernel rbs */
@@ -272,26 +272,6 @@ static inline void play_dead(void)
 }
 #endif /* CONFIG_HOTPLUG_CPU */
 
-static void do_nothing(void *unused)
-{
-}
-
-/*
- * cpu_idle_wait - Used to ensure that all the CPUs discard old value of
- * pm_idle and update to new pm_idle value. Required while changing pm_idle
- * handler on SMP systems.
- *
- * Caller must have changed pm_idle to the new value before the call. Old
- * pm_idle value will not be used by any CPU after the return of this function.
- */
-void cpu_idle_wait(void)
-{
-	smp_mb();
-	/* kick all the CPUs so that they exit out of pm_idle */
-	smp_call_function(do_nothing, NULL, 1);
-}
-EXPORT_SYMBOL_GPL(cpu_idle_wait);
-
 void __attribute__((noreturn))
 cpu_idle (void)
 {
@@ -300,6 +280,7 @@ cpu_idle (void)
 
 	/* endless idle loop with no priority at all */
 	while (1) {
+		rcu_idle_enter();
 		if (can_do_pal_halt) {
 			current_thread_info()->status &= ~TS_POLLING;
 			/*
@@ -330,9 +311,8 @@ cpu_idle (void)
 			normal_xtp();
 #endif
 		}
-		preempt_enable_no_resched();
-		schedule();
-		preempt_disable();
+		rcu_idle_exit();
+		schedule_preempt_disabled();
 		check_pgt_cache();
 		if (cpu_is_offline(cpu))
 			play_dead();
@@ -634,14 +614,14 @@ sys_execve (const char __user *filename,
 	    const char __user *const __user *envp,
 	    struct pt_regs *regs)
 {
-	char *fname;
+	struct filename *fname;
 	int error;
 
 	fname = getname(filename);
 	error = PTR_ERR(fname);
 	if (IS_ERR(fname))
 		goto out;
-	error = do_execve(fname, argv, envp, regs);
+	error = do_execve(fname->name, argv, envp, regs);
 	putname(fname);
 out:
 	return error;

@@ -24,9 +24,12 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/nand.h>
@@ -42,11 +45,17 @@ static struct nand_ecclayout flctl_4secc_oob_16 = {
 };
 
 static struct nand_ecclayout flctl_4secc_oob_64 = {
-	.eccbytes = 10,
-	.eccpos = {48, 49, 50, 51, 52, 53, 54, 55, 56, 57},
+	.eccbytes = 4 * 10,
+	.eccpos = {
+		 6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
+		22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+		38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+		54, 55, 56, 57, 58, 59, 60, 61, 62, 63 },
 	.oobfree = {
-		{.offset = 60,
-		. length = 4} },
+		{.offset =  2, .length = 4},
+		{.offset = 16, .length = 6},
+		{.offset = 32, .length = 6},
+		{.offset = 48, .length = 6} },
 };
 
 static uint8_t scan_ff_pattern[] = { 0xff, 0xff };
@@ -60,15 +69,15 @@ static struct nand_bbt_descr flctl_4secc_smallpage = {
 
 static struct nand_bbt_descr flctl_4secc_largepage = {
 	.options = NAND_BBT_SCAN2NDPAGE,
-	.offs = 58,
+	.offs = 0,
 	.len = 2,
 	.pattern = scan_ff_pattern,
 };
 
 static void empty_fifo(struct sh_flctl *flctl)
 {
-	writel(0x000c0000, FLINTDMACR(flctl));	/* FIFO Clear */
-	writel(0x00000000, FLINTDMACR(flctl));	/* Clear Error flags */
+	writel(flctl->flintdmacr_base | AC1CLR | AC0CLR, FLINTDMACR(flctl));
+	writel(flctl->flintdmacr_base, FLINTDMACR(flctl));
 }
 
 static void start_translation(struct sh_flctl *flctl)
@@ -157,27 +166,56 @@ static void wait_wfifo_ready(struct sh_flctl *flctl)
 	timeout_error(flctl, __func__);
 }
 
-static int wait_recfifo_ready(struct sh_flctl *flctl, int sector_number)
+static enum flctl_ecc_res_t wait_recfifo_ready
+		(struct sh_flctl *flctl, int sector_number)
 {
 	uint32_t timeout = LOOP_TIMEOUT_MAX;
-	int checked[4];
 	void __iomem *ecc_reg[4];
 	int i;
+	int state = FL_SUCCESS;
 	uint32_t data, size;
 
-	memset(checked, 0, sizeof(checked));
-
+	/*
+	 * First this loops checks in FLDTCNTR if we are ready to read out the
+	 * oob data. This is the case if either all went fine without errors or
+	 * if the bottom part of the loop corrected the errors or marked them as
+	 * uncorrectable and the controller is given time to push the data into
+	 * the FIFO.
+	 */
 	while (timeout--) {
+		/* check if all is ok and we can read out the OOB */
 		size = readl(FLDTCNTR(flctl)) >> 24;
-		if (size & 0xFF)
-			return 0;	/* success */
+		if ((size & 0xFF) == 4)
+			return state;
 
-		if (readl(FL4ECCCR(flctl)) & _4ECCFA)
-			return 1;	/* can't correct */
-
-		udelay(1);
-		if (!(readl(FL4ECCCR(flctl)) & _4ECCEND))
+		/* check if a correction code has been calculated */
+		if (!(readl(FL4ECCCR(flctl)) & _4ECCEND)) {
+			/*
+			 * either we wait for the fifo to be filled or a
+			 * correction pattern is being generated
+			 */
+			udelay(1);
 			continue;
+		}
+
+		/* check for an uncorrectable error */
+		if (readl(FL4ECCCR(flctl)) & _4ECCFA) {
+			/* check if we face a non-empty page */
+			for (i = 0; i < 512; i++) {
+				if (flctl->done_buff[i] != 0xff) {
+					state = FL_ERROR; /* can't correct */
+					break;
+				}
+			}
+
+			if (state == FL_SUCCESS)
+				dev_dbg(&flctl->pdev->dev,
+				"reading empty sector %d, ecc error ignored\n",
+				sector_number);
+
+			writel(0, FL4ECCCR(flctl));
+			continue;
+		}
 
 		/* start error correction */
 		ecc_reg[0] = FL4ECCRESULT0(flctl);
@@ -186,28 +224,26 @@ static int wait_recfifo_ready(struct sh_flctl *flctl, int sector_number)
 		ecc_reg[3] = FL4ECCRESULT3(flctl);
 
 		for (i = 0; i < 3; i++) {
+			uint8_t org;
+			int index;
+
 			data = readl(ecc_reg[i]);
-			if (data != INIT_FL4ECCRESULT_VAL && !checked[i]) {
-				uint8_t org;
-				int index;
 
-				if (flctl->page_size)
-					index = (512 * sector_number) +
-						(data >> 16);
-				else
-					index = data >> 16;
+			if (flctl->page_size)
+				index = (512 * sector_number) +
+					(data >> 16);
+			else
+				index = data >> 16;
 
-				org = flctl->done_buff[index];
-				flctl->done_buff[index] = org ^ (data & 0xFF);
-				checked[i] = 1;
-			}
+			org = flctl->done_buff[index];
+			flctl->done_buff[index] = org ^ (data & 0xFF);
 		}
-
+		state = FL_REPAIRABLE;
 		writel(0, FL4ECCCR(flctl));
 	}
 
 	timeout_error(flctl, __func__);
-	return 1;	/* timeout */
+	return FL_TIMEOUT;	/* timeout */
 }
 
 static void wait_wecfifo_ready(struct sh_flctl *flctl)
@@ -240,31 +276,33 @@ static void read_fiforeg(struct sh_flctl *flctl, int rlen, int offset)
 {
 	int i, len_4align;
 	unsigned long *buf = (unsigned long *)&flctl->done_buff[offset];
-	void *fifo_addr = (void *)FLDTFIFO(flctl);
 
 	len_4align = (rlen + 3) / 4;
 
 	for (i = 0; i < len_4align; i++) {
 		wait_rfifo_ready(flctl);
-		buf[i] = readl(fifo_addr);
+		buf[i] = readl(FLDTFIFO(flctl));
 		buf[i] = be32_to_cpu(buf[i]);
 	}
 }
 
-static int read_ecfiforeg(struct sh_flctl *flctl, uint8_t *buff, int sector)
+static enum flctl_ecc_res_t read_ecfiforeg
+		(struct sh_flctl *flctl, uint8_t *buff, int sector)
 {
 	int i;
+	enum flctl_ecc_res_t res;
 	unsigned long *ecc_buf = (unsigned long *)buff;
-	void *fifo_addr = (void *)FLECFIFO(flctl);
 
-	for (i = 0; i < 4; i++) {
-		if (wait_recfifo_ready(flctl , sector))
-			return 1;
-		ecc_buf[i] = readl(fifo_addr);
-		ecc_buf[i] = be32_to_cpu(ecc_buf[i]);
+	res = wait_recfifo_ready(flctl , sector);
+
+	if (res != FL_ERROR) {
+		for (i = 0; i < 4; i++) {
+			ecc_buf[i] = readl(FLECFIFO(flctl));
+			ecc_buf[i] = be32_to_cpu(ecc_buf[i]);
+		}
 	}
 
-	return 0;
+	return res;
 }
 
 static void write_fiforeg(struct sh_flctl *flctl, int rlen, int offset)
@@ -280,10 +318,22 @@ static void write_fiforeg(struct sh_flctl *flctl, int rlen, int offset)
 	}
 }
 
+static void write_ec_fiforeg(struct sh_flctl *flctl, int rlen, int offset)
+{
+	int i, len_4align;
+	unsigned long *data = (unsigned long *)&flctl->done_buff[offset];
+
+	len_4align = (rlen + 3) / 4;
+	for (i = 0; i < len_4align; i++) {
+		wait_wecfifo_ready(flctl);
+		writel(cpu_to_be32(data[i]), FLECFIFO(flctl));
+	}
+}
+
 static void set_cmd_regs(struct mtd_info *mtd, uint32_t cmd, uint32_t flcmcdr_val)
 {
 	struct sh_flctl *flctl = mtd_to_flctl(mtd);
-	uint32_t flcmncr_val = readl(FLCMNCR(flctl)) & ~SEL_16BIT;
+	uint32_t flcmncr_val = flctl->flcmncr_base & ~SEL_16BIT;
 	uint32_t flcmdcr_val, addr_len_bytes = 0;
 
 	/* Set SNAND bit if page size is 2048byte */
@@ -303,6 +353,7 @@ static void set_cmd_regs(struct mtd_info *mtd, uint32_t cmd, uint32_t flcmcdr_va
 		break;
 	case NAND_CMD_READ0:
 	case NAND_CMD_READOOB:
+	case NAND_CMD_RNDOUT:
 		addr_len_bytes = flctl->rw_ADRCNT;
 		flcmdcr_val |= CDSRC_E;
 		if (flctl->chip.options & NAND_BUSWIDTH_16)
@@ -320,6 +371,7 @@ static void set_cmd_regs(struct mtd_info *mtd, uint32_t cmd, uint32_t flcmcdr_va
 		break;
 	case NAND_CMD_READID:
 		flcmncr_val &= ~SNAND_E;
+		flcmdcr_val |= CDSRC_E;
 		addr_len_bytes = ADRCNT_1;
 		break;
 	case NAND_CMD_STATUS:
@@ -341,75 +393,67 @@ static void set_cmd_regs(struct mtd_info *mtd, uint32_t cmd, uint32_t flcmcdr_va
 }
 
 static int flctl_read_page_hwecc(struct mtd_info *mtd, struct nand_chip *chip,
-				uint8_t *buf, int page)
+				uint8_t *buf, int oob_required, int page)
 {
-	int i, eccsize = chip->ecc.size;
-	int eccbytes = chip->ecc.bytes;
-	int eccsteps = chip->ecc.steps;
-	uint8_t *p = buf;
-	struct sh_flctl *flctl = mtd_to_flctl(mtd);
-
-	for (i = 0; eccsteps; eccsteps--, i += eccbytes, p += eccsize)
-		chip->read_buf(mtd, p, eccsize);
-
-	for (i = 0; eccsteps; eccsteps--, i += eccbytes, p += eccsize) {
-		if (flctl->hwecc_cant_correct[i])
-			mtd->ecc_stats.failed++;
-		else
-			mtd->ecc_stats.corrected += 0;
-	}
-
+	chip->read_buf(mtd, buf, mtd->writesize);
+	if (oob_required)
+		chip->read_buf(mtd, chip->oob_poi, mtd->oobsize);
 	return 0;
 }
 
-static void flctl_write_page_hwecc(struct mtd_info *mtd, struct nand_chip *chip,
-				   const uint8_t *buf)
+static int flctl_write_page_hwecc(struct mtd_info *mtd, struct nand_chip *chip,
+				   const uint8_t *buf, int oob_required)
 {
-	int i, eccsize = chip->ecc.size;
-	int eccbytes = chip->ecc.bytes;
-	int eccsteps = chip->ecc.steps;
-	const uint8_t *p = buf;
-
-	for (i = 0; eccsteps; eccsteps--, i += eccbytes, p += eccsize)
-		chip->write_buf(mtd, p, eccsize);
+	chip->write_buf(mtd, buf, mtd->writesize);
+	chip->write_buf(mtd, chip->oob_poi, mtd->oobsize);
+	return 0;
 }
 
 static void execmd_read_page_sector(struct mtd_info *mtd, int page_addr)
 {
 	struct sh_flctl *flctl = mtd_to_flctl(mtd);
 	int sector, page_sectors;
+	enum flctl_ecc_res_t ecc_result;
 
-	if (flctl->page_size)
-		page_sectors = 4;
-	else
-		page_sectors = 1;
-
-	writel(readl(FLCMNCR(flctl)) | ACM_SACCES_MODE | _4ECCCORRECT,
-		 FLCMNCR(flctl));
+	page_sectors = flctl->page_size ? 4 : 1;
 
 	set_cmd_regs(mtd, NAND_CMD_READ0,
 		(NAND_CMD_READSTART << 8) | NAND_CMD_READ0);
 
+	writel(readl(FLCMNCR(flctl)) | ACM_SACCES_MODE | _4ECCCORRECT,
+		 FLCMNCR(flctl));
+	writel(readl(FLCMDCR(flctl)) | page_sectors, FLCMDCR(flctl));
+	writel(page_addr << 2, FLADR(flctl));
+
+	empty_fifo(flctl);
+	start_translation(flctl);
+
 	for (sector = 0; sector < page_sectors; sector++) {
-		int ret;
-
-		empty_fifo(flctl);
-		writel(readl(FLCMDCR(flctl)) | 1, FLCMDCR(flctl));
-		writel(page_addr << 2 | sector, FLADR(flctl));
-
-		start_translation(flctl);
 		read_fiforeg(flctl, 512, 512 * sector);
 
-		ret = read_ecfiforeg(flctl,
+		ecc_result = read_ecfiforeg(flctl,
 			&flctl->done_buff[mtd->writesize + 16 * sector],
 			sector);
 
-		if (ret)
-			flctl->hwecc_cant_correct[sector] = 1;
-
-		writel(0x0, FL4ECCCR(flctl));
-		wait_completion(flctl);
+		switch (ecc_result) {
+		case FL_REPAIRABLE:
+			dev_info(&flctl->pdev->dev,
+				"applied ecc on page 0x%x", page_addr);
+			flctl->mtd.ecc_stats.corrected++;
+			break;
+		case FL_ERROR:
+			dev_warn(&flctl->pdev->dev,
+				"page 0x%x contains corrupted data\n",
+				page_addr);
+			flctl->mtd.ecc_stats.failed++;
+			break;
+		default:
+			;
+		}
 	}
+
+	wait_completion(flctl);
+
 	writel(readl(FLCMNCR(flctl)) & ~(ACM_SACCES_MODE | _4ECCCORRECT),
 			FLCMNCR(flctl));
 }
@@ -417,30 +461,20 @@ static void execmd_read_page_sector(struct mtd_info *mtd, int page_addr)
 static void execmd_read_oob(struct mtd_info *mtd, int page_addr)
 {
 	struct sh_flctl *flctl = mtd_to_flctl(mtd);
+	int page_sectors = flctl->page_size ? 4 : 1;
+	int i;
 
 	set_cmd_regs(mtd, NAND_CMD_READ0,
 		(NAND_CMD_READSTART << 8) | NAND_CMD_READ0);
 
 	empty_fifo(flctl);
-	if (flctl->page_size) {
-		int i;
-		/* In case that the page size is 2k */
-		for (i = 0; i < 16 * 3; i++)
-			flctl->done_buff[i] = 0xFF;
 
-		set_addr(mtd, 3 * 528 + 512, page_addr);
+	for (i = 0; i < page_sectors; i++) {
+		set_addr(mtd, (512 + 16) * i + 512 , page_addr);
 		writel(16, FLDTCNTR(flctl));
 
 		start_translation(flctl);
-		read_fiforeg(flctl, 16, 16 * 3);
-		wait_completion(flctl);
-	} else {
-		/* In case that the page size is 512b */
-		set_addr(mtd, 512, page_addr);
-		writel(16, FLDTCNTR(flctl));
-
-		start_translation(flctl);
-		read_fiforeg(flctl, 16, 0);
+		read_fiforeg(flctl, 16, 16 * i);
 		wait_completion(flctl);
 	}
 }
@@ -448,34 +482,26 @@ static void execmd_read_oob(struct mtd_info *mtd, int page_addr)
 static void execmd_write_page_sector(struct mtd_info *mtd)
 {
 	struct sh_flctl *flctl = mtd_to_flctl(mtd);
-	int i, page_addr = flctl->seqin_page_addr;
+	int page_addr = flctl->seqin_page_addr;
 	int sector, page_sectors;
 
-	if (flctl->page_size)
-		page_sectors = 4;
-	else
-		page_sectors = 1;
-
-	writel(readl(FLCMNCR(flctl)) | ACM_SACCES_MODE, FLCMNCR(flctl));
+	page_sectors = flctl->page_size ? 4 : 1;
 
 	set_cmd_regs(mtd, NAND_CMD_PAGEPROG,
 			(NAND_CMD_PAGEPROG << 8) | NAND_CMD_SEQIN);
 
+	empty_fifo(flctl);
+	writel(readl(FLCMNCR(flctl)) | ACM_SACCES_MODE, FLCMNCR(flctl));
+	writel(readl(FLCMDCR(flctl)) | page_sectors, FLCMDCR(flctl));
+	writel(page_addr << 2, FLADR(flctl));
+	start_translation(flctl);
+
 	for (sector = 0; sector < page_sectors; sector++) {
-		empty_fifo(flctl);
-		writel(readl(FLCMDCR(flctl)) | 1, FLCMDCR(flctl));
-		writel(page_addr << 2 | sector, FLADR(flctl));
-
-		start_translation(flctl);
 		write_fiforeg(flctl, 512, 512 * sector);
-
-		for (i = 0; i < 4; i++) {
-			wait_wecfifo_ready(flctl); /* wait for write ready */
-			writel(0xFFFFFFFF, FLECFIFO(flctl));
-		}
-		wait_completion(flctl);
+		write_ec_fiforeg(flctl, 16, mtd->writesize + 16 * sector);
 	}
 
+	wait_completion(flctl);
 	writel(readl(FLCMNCR(flctl)) & ~ACM_SACCES_MODE, FLCMNCR(flctl));
 }
 
@@ -485,18 +511,12 @@ static void execmd_write_oob(struct mtd_info *mtd)
 	int page_addr = flctl->seqin_page_addr;
 	int sector, page_sectors;
 
-	if (flctl->page_size) {
-		sector = 3;
-		page_sectors = 4;
-	} else {
-		sector = 0;
-		page_sectors = 1;
-	}
+	page_sectors = flctl->page_size ? 4 : 1;
 
 	set_cmd_regs(mtd, NAND_CMD_PAGEPROG,
 			(NAND_CMD_PAGEPROG << 8) | NAND_CMD_SEQIN);
 
-	for (; sector < page_sectors; sector++) {
+	for (sector = 0; sector < page_sectors; sector++) {
 		empty_fifo(flctl);
 		set_addr(mtd, sector * 528 + 512, page_addr);
 		writel(16, FLDTCNTR(flctl));	/* set read size */
@@ -513,6 +533,8 @@ static void flctl_cmdfunc(struct mtd_info *mtd, unsigned int command,
 	struct sh_flctl *flctl = mtd_to_flctl(mtd);
 	uint32_t read_cmd = 0;
 
+	pm_runtime_get_sync(&flctl->pdev->dev);
+
 	flctl->read_bytes = 0;
 	if (command != NAND_CMD_PAGEPROG)
 		flctl->index = 0;
@@ -525,7 +547,6 @@ static void flctl_cmdfunc(struct mtd_info *mtd, unsigned int command,
 			execmd_read_page_sector(mtd, page_addr);
 			break;
 		}
-		empty_fifo(flctl);
 		if (flctl->page_size)
 			set_cmd_regs(mtd, command, (NAND_CMD_READSTART << 8)
 				| command);
@@ -547,7 +568,6 @@ static void flctl_cmdfunc(struct mtd_info *mtd, unsigned int command,
 			break;
 		}
 
-		empty_fifo(flctl);
 		if (flctl->page_size) {
 			set_cmd_regs(mtd, command, (NAND_CMD_READSTART << 8)
 				| NAND_CMD_READ0);
@@ -559,15 +579,35 @@ static void flctl_cmdfunc(struct mtd_info *mtd, unsigned int command,
 		flctl->read_bytes = mtd->oobsize;
 		goto read_normal_exit;
 
-	case NAND_CMD_READID:
-		empty_fifo(flctl);
-		set_cmd_regs(mtd, command, command);
-		set_addr(mtd, 0, 0);
+	case NAND_CMD_RNDOUT:
+		if (flctl->hwecc)
+			break;
 
-		flctl->read_bytes = 4;
+		if (flctl->page_size)
+			set_cmd_regs(mtd, command, (NAND_CMD_RNDOUTSTART << 8)
+				| command);
+		else
+			set_cmd_regs(mtd, command, command);
+
+		set_addr(mtd, column, 0);
+
+		flctl->read_bytes = mtd->writesize + mtd->oobsize - column;
+		goto read_normal_exit;
+
+	case NAND_CMD_READID:
+		set_cmd_regs(mtd, command, command);
+
+		/* READID is always performed using an 8-bit bus */
+		if (flctl->chip.options & NAND_BUSWIDTH_16)
+			column <<= 1;
+		set_addr(mtd, column, 0);
+
+		flctl->read_bytes = 8;
 		writel(flctl->read_bytes, FLDTCNTR(flctl)); /* set read size */
+		empty_fifo(flctl);
 		start_translation(flctl);
-		read_datareg(flctl, 0);	/* read and end */
+		read_fiforeg(flctl, flctl->read_bytes, 0);
+		wait_completion(flctl);
 		break;
 
 	case NAND_CMD_ERASE1:
@@ -650,29 +690,55 @@ static void flctl_cmdfunc(struct mtd_info *mtd, unsigned int command,
 	default:
 		break;
 	}
-	return;
+	goto runtime_exit;
 
 read_normal_exit:
 	writel(flctl->read_bytes, FLDTCNTR(flctl));	/* set read size */
+	empty_fifo(flctl);
 	start_translation(flctl);
 	read_fiforeg(flctl, flctl->read_bytes, 0);
 	wait_completion(flctl);
+runtime_exit:
+	pm_runtime_put_sync(&flctl->pdev->dev);
 	return;
 }
 
 static void flctl_select_chip(struct mtd_info *mtd, int chipnr)
 {
 	struct sh_flctl *flctl = mtd_to_flctl(mtd);
-	uint32_t flcmncr_val = readl(FLCMNCR(flctl));
+	int ret;
 
 	switch (chipnr) {
 	case -1:
-		flcmncr_val &= ~CE0_ENABLE;
-		writel(flcmncr_val, FLCMNCR(flctl));
+		flctl->flcmncr_base &= ~CE0_ENABLE;
+
+		pm_runtime_get_sync(&flctl->pdev->dev);
+		writel(flctl->flcmncr_base, FLCMNCR(flctl));
+
+		if (flctl->qos_request) {
+			dev_pm_qos_remove_request(&flctl->pm_qos);
+			flctl->qos_request = 0;
+		}
+
+		pm_runtime_put_sync(&flctl->pdev->dev);
 		break;
 	case 0:
-		flcmncr_val |= CE0_ENABLE;
-		writel(flcmncr_val, FLCMNCR(flctl));
+		flctl->flcmncr_base |= CE0_ENABLE;
+
+		if (!flctl->qos_request) {
+			ret = dev_pm_qos_add_request(&flctl->pdev->dev,
+							&flctl->pm_qos, 100);
+			if (ret < 0)
+				dev_err(&flctl->pdev->dev,
+					"PM QoS request failed: %d\n", ret);
+			flctl->qos_request = 1;
+		}
+
+		if (flctl->holden) {
+			pm_runtime_get_sync(&flctl->pdev->dev);
+			writel(HOLDEN, FLHOLDCR(flctl));
+			pm_runtime_put_sync(&flctl->pdev->dev);
+		}
 		break;
 	default:
 		BUG();
@@ -682,10 +748,9 @@ static void flctl_select_chip(struct mtd_info *mtd, int chipnr)
 static void flctl_write_buf(struct mtd_info *mtd, const uint8_t *buf, int len)
 {
 	struct sh_flctl *flctl = mtd_to_flctl(mtd);
-	int i, index = flctl->index;
+	int index = flctl->index;
 
-	for (i = 0; i < len; i++)
-		flctl->done_buff[index + i] = buf[i];
+	memcpy(&flctl->done_buff[index], buf, len);
 	flctl->index += len;
 }
 
@@ -714,25 +779,11 @@ static uint16_t flctl_read_word(struct mtd_info *mtd)
 
 static void flctl_read_buf(struct mtd_info *mtd, uint8_t *buf, int len)
 {
-	int i;
+	struct sh_flctl *flctl = mtd_to_flctl(mtd);
+	int index = flctl->index;
 
-	for (i = 0; i < len; i++)
-		buf[i] = flctl_read_byte(mtd);
-}
-
-static int flctl_verify_buf(struct mtd_info *mtd, const u_char *buf, int len)
-{
-	int i;
-
-	for (i = 0; i < len; i++)
-		if (buf[i] != flctl_read_byte(mtd))
-			return -EFAULT;
-	return 0;
-}
-
-static void flctl_register_init(struct sh_flctl *flctl, unsigned long val)
-{
-	writel(val, FLCMNCR(flctl));
+	memcpy(buf, &flctl->done_buff[index], len);
+	flctl->index += len;
 }
 
 static int flctl_chip_init_tail(struct mtd_info *mtd)
@@ -781,18 +832,28 @@ static int flctl_chip_init_tail(struct mtd_info *mtd)
 
 		chip->ecc.size = 512;
 		chip->ecc.bytes = 10;
+		chip->ecc.strength = 4;
 		chip->ecc.read_page = flctl_read_page_hwecc;
 		chip->ecc.write_page = flctl_write_page_hwecc;
 		chip->ecc.mode = NAND_ECC_HW;
 
 		/* 4 symbols ECC enabled */
-		writel(readl(FLCMNCR(flctl)) | _4ECCEN | ECCPOS2 | ECCPOS_02,
-				FLCMNCR(flctl));
+		flctl->flcmncr_base |= _4ECCEN;
 	} else {
 		chip->ecc.mode = NAND_ECC_SOFT;
 	}
 
 	return 0;
+}
+
+static irqreturn_t flctl_handle_flste(int irq, void *dev_id)
+{
+	struct sh_flctl *flctl = dev_id;
+
+	dev_err(&flctl->pdev->dev, "flste irq: %x\n", readl(FLINTDMACR(flctl)));
+	writel(flctl->flintdmacr_base, FLINTDMACR(flctl));
+
+	return IRQ_HANDLED;
 }
 
 static int __devinit flctl_probe(struct platform_device *pdev)
@@ -803,6 +864,7 @@ static int __devinit flctl_probe(struct platform_device *pdev)
 	struct nand_chip *nand;
 	struct sh_flctl_platform_data *pdata;
 	int ret = -ENXIO;
+	int irq;
 
 	pdata = pdev->dev.platform_data;
 	if (pdata == NULL) {
@@ -819,13 +881,25 @@ static int __devinit flctl_probe(struct platform_device *pdev)
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
 		dev_err(&pdev->dev, "failed to get I/O memory\n");
-		goto err;
+		goto err_iomap;
 	}
 
 	flctl->reg = ioremap(res->start, resource_size(res));
 	if (flctl->reg == NULL) {
 		dev_err(&pdev->dev, "failed to remap I/O memory\n");
-		goto err;
+		goto err_iomap;
+	}
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0) {
+		dev_err(&pdev->dev, "failed to get flste irq data\n");
+		goto err_flste;
+	}
+
+	ret = request_irq(irq, flctl_handle_flste, IRQF_SHARED, "flste", flctl);
+	if (ret) {
+		dev_err(&pdev->dev, "request interrupt failed.\n");
+		goto err_flste;
 	}
 
 	platform_set_drvdata(pdev, flctl);
@@ -834,10 +908,9 @@ static int __devinit flctl_probe(struct platform_device *pdev)
 	flctl_mtd->priv = nand;
 	flctl->pdev = pdev;
 	flctl->hwecc = pdata->has_hwecc;
-
-	flctl_register_init(flctl, pdata->flcmncr_val);
-
-	nand->options = NAND_NO_AUTOINCR;
+	flctl->holden = pdata->use_holden;
+	flctl->flcmncr_base = pdata->flcmncr_val;
+	flctl->flintdmacr_base = flctl->hwecc ? (STERINTE | ECERB) : STERINTE;
 
 	/* Set address of hardware control function */
 	/* 20 us command delay time */
@@ -846,7 +919,6 @@ static int __devinit flctl_probe(struct platform_device *pdev)
 	nand->read_byte = flctl_read_byte;
 	nand->write_buf = flctl_write_buf;
 	nand->read_buf = flctl_read_buf;
-	nand->verify_buf = flctl_verify_buf;
 	nand->select_chip = flctl_select_chip;
 	nand->cmdfunc = flctl_cmdfunc;
 
@@ -855,23 +927,31 @@ static int __devinit flctl_probe(struct platform_device *pdev)
 		nand->read_word = flctl_read_word;
 	}
 
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_resume(&pdev->dev);
+
 	ret = nand_scan_ident(flctl_mtd, 1, NULL);
 	if (ret)
-		goto err;
+		goto err_chip;
 
 	ret = flctl_chip_init_tail(flctl_mtd);
 	if (ret)
-		goto err;
+		goto err_chip;
 
 	ret = nand_scan_tail(flctl_mtd);
 	if (ret)
-		goto err;
+		goto err_chip;
 
 	mtd_device_register(flctl_mtd, pdata->parts, pdata->nr_parts);
 
 	return 0;
 
-err:
+err_chip:
+	pm_runtime_disable(&pdev->dev);
+	free_irq(irq, flctl);
+err_flste:
+	iounmap(flctl->reg);
+err_iomap:
 	kfree(flctl);
 	return ret;
 }
@@ -881,6 +961,9 @@ static int __devexit flctl_remove(struct platform_device *pdev)
 	struct sh_flctl *flctl = platform_get_drvdata(pdev);
 
 	nand_release(&flctl->mtd);
+	pm_runtime_disable(&pdev->dev);
+	free_irq(platform_get_irq(pdev, 0), flctl);
+	iounmap(flctl->reg);
 	kfree(flctl);
 
 	return 0;

@@ -1,6 +1,6 @@
 /******************************************************************************
  *
- * Copyright(c) 2009-2010  Realtek Corporation.
+ * Copyright(c) 2009-2012  Realtek Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License as
@@ -492,13 +492,14 @@ static void _rtl92se_translate_rx_signal_stuff(struct ieee80211_hw *hw,
 	praddr = hdr->addr1;
 
 	packet_matchbssid = ((IEEE80211_FTYPE_CTL != type) &&
-	     (!compare_ether_addr(mac->bssid, (cfc & IEEE80211_FCTL_TODS) ?
-			hdr->addr1 : (cfc & IEEE80211_FCTL_FROMDS) ?
-			hdr->addr2 : hdr->addr3)) && (!pstats->hwerror) &&
-			(!pstats->crc) && (!pstats->icv));
+	     ether_addr_equal(mac->bssid,
+			      (cfc & IEEE80211_FCTL_TODS) ? hdr->addr1 :
+			      (cfc & IEEE80211_FCTL_FROMDS) ? hdr->addr2 :
+			      hdr->addr3) &&
+	     (!pstats->hwerror) && (!pstats->crc) && (!pstats->icv));
 
 	packet_toself = packet_matchbssid &&
-	    (!compare_ether_addr(praddr, rtlefuse->dev_addr));
+	    ether_addr_equal(praddr, rtlefuse->dev_addr);
 
 	if (ieee80211_is_beacon(fc))
 		packet_beacon = true;
@@ -590,15 +591,16 @@ bool rtl92se_rx_query_desc(struct ieee80211_hw *hw, struct rtl_stats *stats,
 
 void rtl92se_tx_fill_desc(struct ieee80211_hw *hw,
 		struct ieee80211_hdr *hdr, u8 *pdesc_tx,
-		struct ieee80211_tx_info *info, struct sk_buff *skb,
+		struct ieee80211_tx_info *info,
+		struct ieee80211_sta *sta,
+		struct sk_buff *skb,
 		u8 hw_queue, struct rtl_tcb_desc *ptcb_desc)
 {
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_mac *mac = rtl_mac(rtl_priv(hw));
 	struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
 	struct rtl_hal *rtlhal = rtl_hal(rtl_priv(hw));
-	struct ieee80211_sta *sta = info->control.sta;
-	u8 *pdesc = (u8 *) pdesc_tx;
+	u8 *pdesc = pdesc_tx;
 	u16 seq_number;
 	__le16 fc = hdr->frame_control;
 	u8 reserved_macid = 0;
@@ -754,9 +756,9 @@ void rtl92se_tx_fill_desc(struct ieee80211_hw *hw,
 	SET_TX_DESC_TX_BUFFER_SIZE(pdesc, (u16) skb->len);
 
 	/* DOWRD 8 */
-	SET_TX_DESC_TX_BUFFER_ADDRESS(pdesc, cpu_to_le32(mapping));
+	SET_TX_DESC_TX_BUFFER_ADDRESS(pdesc, mapping);
 
-	RT_TRACE(rtlpriv, COMP_SEND, DBG_TRACE, ("\n"));
+	RT_TRACE(rtlpriv, COMP_SEND, DBG_TRACE, "\n");
 }
 
 void rtl92se_tx_fill_cmddesc(struct ieee80211_hw *hw, u8 *pdesc,
@@ -784,7 +786,7 @@ void rtl92se_tx_fill_cmddesc(struct ieee80211_hw *hw, u8 *pdesc,
 		/* 92SE need not to set TX packet size when firmware download */
 		SET_TX_DESC_PKT_SIZE(pdesc, (u16)(skb->len));
 		SET_TX_DESC_TX_BUFFER_SIZE(pdesc, (u16)(skb->len));
-		SET_TX_DESC_TX_BUFFER_ADDRESS(pdesc, cpu_to_le32(mapping));
+		SET_TX_DESC_TX_BUFFER_ADDRESS(pdesc, mapping);
 
 		wmb();
 		SET_TX_DESC_OWN(pdesc, 1);
@@ -803,7 +805,7 @@ void rtl92se_tx_fill_cmddesc(struct ieee80211_hw *hw, u8 *pdesc,
 		SET_BITS_TO_LE_4BYTE(skb->data, 24, 7, rtlhal->h2c_txcmd_seq);
 
 		SET_TX_DESC_TX_BUFFER_SIZE(pdesc, (u16)(skb->len));
-		SET_TX_DESC_TX_BUFFER_ADDRESS(pdesc, cpu_to_le32(mapping));
+		SET_TX_DESC_TX_BUFFER_ADDRESS(pdesc, mapping);
 
 		wmb();
 		SET_TX_DESC_OWN(pdesc, 1);
@@ -823,8 +825,8 @@ void rtl92se_set_desc(u8 *pdesc, bool istx, u8 desc_name, u8 *val)
 			SET_TX_DESC_NEXT_DESC_ADDRESS(pdesc, *(u32 *) val);
 			break;
 		default:
-			RT_ASSERT(false, ("ERR txdesc :%d not process\n",
-				  desc_name));
+			RT_ASSERT(false, "ERR txdesc :%d not process\n",
+				  desc_name);
 			break;
 		}
 	} else {
@@ -843,8 +845,8 @@ void rtl92se_set_desc(u8 *pdesc, bool istx, u8 desc_name, u8 *val)
 			SET_RX_STATUS_DESC_EOR(pdesc, 1);
 			break;
 		default:
-			RT_ASSERT(false, ("ERR rxdesc :%d not process\n",
-				  desc_name));
+			RT_ASSERT(false, "ERR rxdesc :%d not process\n",
+				  desc_name);
 			break;
 		}
 	}
@@ -863,8 +865,8 @@ u32 rtl92se_get_desc(u8 *desc, bool istx, u8 desc_name)
 			ret = GET_TX_DESC_TX_BUFFER_ADDRESS(desc);
 			break;
 		default:
-			RT_ASSERT(false, ("ERR txdesc :%d not process\n",
-				  desc_name));
+			RT_ASSERT(false, "ERR txdesc :%d not process\n",
+				  desc_name);
 			break;
 		}
 	} else {
@@ -876,8 +878,8 @@ u32 rtl92se_get_desc(u8 *desc, bool istx, u8 desc_name)
 			ret = GET_RX_STATUS_DESC_PKT_LEN(desc);
 			break;
 		default:
-			RT_ASSERT(false, ("ERR rxdesc :%d not process\n",
-				  desc_name));
+			RT_ASSERT(false, "ERR rxdesc :%d not process\n",
+				  desc_name);
 			break;
 		}
 	}

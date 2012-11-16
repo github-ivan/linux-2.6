@@ -22,7 +22,9 @@
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
+#include <linux/stat.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <net/sock.h>
 
 #include "usbip_common.h"
@@ -36,6 +38,8 @@ unsigned long usbip_debug_flag = 0xffffffff;
 unsigned long usbip_debug_flag;
 #endif
 EXPORT_SYMBOL_GPL(usbip_debug_flag);
+module_param(usbip_debug_flag, ulong, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(usbip_debug_flag, "debug flags (defined in usbip_common.h)");
 
 /* FIXME */
 struct device_attribute dev_attr_usbip_debug;
@@ -157,8 +161,7 @@ static void usbip_dump_usb_device(struct usb_device *udev)
 	dev_dbg(dev, "have_langid %d, string_langid %d\n",
 		udev->have_langid, udev->string_langid);
 
-	dev_dbg(dev, "maxchild %d, children %p\n",
-		udev->maxchild, udev->children);
+	dev_dbg(dev, "maxchild %d\n", udev->maxchild);
 }
 
 static void usbip_dump_request_type(__u8 rt)
@@ -735,26 +738,25 @@ EXPORT_SYMBOL_GPL(usbip_recv_iso);
  * buffer and iso packets need to be stored and be in propeper endian in urb
  * before calling this function
  */
-int usbip_pad_iso(struct usbip_device *ud, struct urb *urb)
+void usbip_pad_iso(struct usbip_device *ud, struct urb *urb)
 {
 	int np = urb->number_of_packets;
 	int i;
-	int ret;
 	int actualoffset = urb->actual_length;
 
 	if (!usb_pipeisoc(urb->pipe))
-		return 0;
+		return;
 
 	/* if no packets or length of data is 0, then nothing to unpack */
 	if (np == 0 || urb->actual_length == 0)
-		return 0;
+		return;
 
 	/*
 	 * if actual_length is transfer_buffer_length then no padding is
 	 * present.
 	*/
 	if (urb->actual_length == urb->transfer_buffer_length)
-		return 0;
+		return;
 
 	/*
 	 * loop over all packets from last to first (to prevent overwritting
@@ -766,8 +768,6 @@ int usbip_pad_iso(struct usbip_device *ud, struct urb *urb)
 			urb->transfer_buffer + actualoffset,
 			urb->iso_frame_desc[i].actual_length);
 	}
-
-	return ret;
 }
 EXPORT_SYMBOL_GPL(usbip_pad_iso);
 

@@ -25,15 +25,18 @@
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
 #include <linux/io.h>
+#include <linux/sizes.h>
 
+#include <asm/cp15.h>
 #include <asm/cputype.h>
 #include <asm/cacheflush.h>
 #include <asm/mmu_context.h>
 #include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
-#include <asm/sizes.h>
+#include <asm/system_info.h>
 
 #include <asm/mach/map.h>
+#include <asm/mach/pci.h>
 #include "mm.h"
 
 int ioremap_page(unsigned long virt, unsigned long phys,
@@ -245,6 +248,7 @@ void __iomem * __arm_ioremap_pfn_caller(unsigned long pfn,
  	if (!area)
  		return NULL;
  	addr = (unsigned long)area->addr;
+	area->phys_addr = __pfn_to_phys(pfn);
 
 #if !defined(CONFIG_SMP) && !defined(CONFIG_ARM_LPAE)
 	if (DOMAIN_IO == 0 &&
@@ -306,11 +310,15 @@ __arm_ioremap_pfn(unsigned long pfn, unsigned long offset, size_t size,
 }
 EXPORT_SYMBOL(__arm_ioremap_pfn);
 
+void __iomem * (*arch_ioremap_caller)(unsigned long, size_t,
+				      unsigned int, void *) =
+	__arm_ioremap_caller;
+
 void __iomem *
 __arm_ioremap(unsigned long phys_addr, size_t size, unsigned int mtype)
 {
-	return __arm_ioremap_caller(phys_addr, size, mtype,
-			__builtin_return_address(0));
+	return arch_ioremap_caller(phys_addr, size, mtype,
+		__builtin_return_address(0));
 }
 EXPORT_SYMBOL(__arm_ioremap);
 
@@ -369,4 +377,24 @@ void __iounmap(volatile void __iomem *io_addr)
 
 	vunmap(addr);
 }
-EXPORT_SYMBOL(__iounmap);
+
+void (*arch_iounmap)(volatile void __iomem *) = __iounmap;
+
+void __arm_iounmap(volatile void __iomem *io_addr)
+{
+	arch_iounmap(io_addr);
+}
+EXPORT_SYMBOL(__arm_iounmap);
+
+#ifdef CONFIG_PCI
+int pci_ioremap_io(unsigned int offset, phys_addr_t phys_addr)
+{
+	BUG_ON(offset + SZ_64K > IO_SPACE_LIMIT);
+
+	return ioremap_page_range(PCI_IO_VIRT_BASE + offset,
+				  PCI_IO_VIRT_BASE + offset + SZ_64K,
+				  phys_addr,
+				  __pgprot(get_mem_type(MT_DEVICE)->prot_pte));
+}
+EXPORT_SYMBOL_GPL(pci_ioremap_io);
+#endif

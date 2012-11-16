@@ -1131,8 +1131,7 @@ static SENSOR_DEVICE_ATTR(pwm3_auto_channels_temp, S_IWUSR | S_IRUGO,
 static SENSOR_DEVICE_ATTR(pwm4_auto_channels_temp, S_IWUSR | S_IRUGO,
 		    show_pwm_auto_temp, set_pwm_auto_temp, 3);
 
-static struct attribute *adt7470_attr[] =
-{
+static struct attribute *adt7470_attr[] = {
 	&dev_attr_alarm_mask.attr,
 	&dev_attr_num_temp_sensors.attr,
 	&dev_attr_auto_update_interval.attr,
@@ -1257,11 +1256,10 @@ static int adt7470_probe(struct i2c_client *client,
 	struct adt7470_data *data;
 	int err;
 
-	data = kzalloc(sizeof(struct adt7470_data), GFP_KERNEL);
-	if (!data) {
-		err = -ENOMEM;
-		goto exit;
-	}
+	data = devm_kzalloc(&client->dev, sizeof(struct adt7470_data),
+			    GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
 
 	data->num_temp_sensors = -1;
 	data->auto_update_interval = AUTO_UPDATE_INTERVAL;
@@ -1276,8 +1274,9 @@ static int adt7470_probe(struct i2c_client *client,
 
 	/* Register sysfs hooks */
 	data->attrs.attrs = adt7470_attr;
-	if ((err = sysfs_create_group(&client->dev.kobj, &data->attrs)))
-		goto exit_free;
+	err = sysfs_create_group(&client->dev.kobj, &data->attrs);
+	if (err)
+		return err;
 
 	data->hwmon_dev = hwmon_device_register(&client->dev);
 	if (IS_ERR(data->hwmon_dev)) {
@@ -1299,9 +1298,6 @@ exit_unregister:
 	hwmon_device_unregister(data->hwmon_dev);
 exit_remove:
 	sysfs_remove_group(&client->dev.kobj, &data->attrs);
-exit_free:
-	kfree(data);
-exit:
 	return err;
 }
 
@@ -1313,23 +1309,11 @@ static int adt7470_remove(struct i2c_client *client)
 	wait_for_completion(&data->auto_update_stop);
 	hwmon_device_unregister(data->hwmon_dev);
 	sysfs_remove_group(&client->dev.kobj, &data->attrs);
-	kfree(data);
 	return 0;
 }
 
-static int __init adt7470_init(void)
-{
-	return i2c_add_driver(&adt7470_driver);
-}
-
-static void __exit adt7470_exit(void)
-{
-	i2c_del_driver(&adt7470_driver);
-}
+module_i2c_driver(adt7470_driver);
 
 MODULE_AUTHOR("Darrick J. Wong <djwong@us.ibm.com>");
 MODULE_DESCRIPTION("ADT7470 driver");
 MODULE_LICENSE("GPL");
-
-module_init(adt7470_init);
-module_exit(adt7470_exit);

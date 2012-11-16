@@ -24,36 +24,36 @@
 #include <mach/common.h>
 
 /* SH7372 registers */
-#define FRQCRA		0xe6150000
-#define FRQCRB		0xe6150004
-#define FRQCRC		0xe61500e0
-#define FRQCRD		0xe61500e4
-#define VCLKCR1		0xe6150008
-#define VCLKCR2		0xe615000c
-#define VCLKCR3		0xe615001c
-#define FMSICKCR	0xe6150010
-#define FMSOCKCR	0xe6150014
-#define FSIACKCR	0xe6150018
-#define FSIBCKCR	0xe6150090
-#define SUBCKCR		0xe6150080
-#define SPUCKCR		0xe6150084
-#define VOUCKCR		0xe6150088
-#define HDMICKCR	0xe6150094
-#define DSITCKCR	0xe6150060
-#define DSI0PCKCR	0xe6150064
-#define DSI1PCKCR	0xe6150098
-#define PLLC01CR	0xe6150028
-#define PLLC2CR		0xe615002c
-#define RMSTPCR0	0xe6150110
-#define RMSTPCR1	0xe6150114
-#define RMSTPCR2	0xe6150118
-#define RMSTPCR3	0xe615011c
-#define RMSTPCR4	0xe6150120
-#define SMSTPCR0	0xe6150130
-#define SMSTPCR1	0xe6150134
-#define SMSTPCR2	0xe6150138
-#define SMSTPCR3	0xe615013c
-#define SMSTPCR4	0xe6150140
+#define FRQCRA		IOMEM(0xe6150000)
+#define FRQCRB		IOMEM(0xe6150004)
+#define FRQCRC		IOMEM(0xe61500e0)
+#define FRQCRD		IOMEM(0xe61500e4)
+#define VCLKCR1		IOMEM(0xe6150008)
+#define VCLKCR2		IOMEM(0xe615000c)
+#define VCLKCR3		IOMEM(0xe615001c)
+#define FMSICKCR	IOMEM(0xe6150010)
+#define FMSOCKCR	IOMEM(0xe6150014)
+#define FSIACKCR	IOMEM(0xe6150018)
+#define FSIBCKCR	IOMEM(0xe6150090)
+#define SUBCKCR		IOMEM(0xe6150080)
+#define SPUCKCR		IOMEM(0xe6150084)
+#define VOUCKCR		IOMEM(0xe6150088)
+#define HDMICKCR	IOMEM(0xe6150094)
+#define DSITCKCR	IOMEM(0xe6150060)
+#define DSI0PCKCR	IOMEM(0xe6150064)
+#define DSI1PCKCR	IOMEM(0xe6150098)
+#define PLLC01CR	IOMEM(0xe6150028)
+#define PLLC2CR		IOMEM(0xe615002c)
+#define RMSTPCR0	IOMEM(0xe6150110)
+#define RMSTPCR1	IOMEM(0xe6150114)
+#define RMSTPCR2	IOMEM(0xe6150118)
+#define RMSTPCR3	IOMEM(0xe615011c)
+#define RMSTPCR4	IOMEM(0xe6150120)
+#define SMSTPCR0	IOMEM(0xe6150130)
+#define SMSTPCR1	IOMEM(0xe6150134)
+#define SMSTPCR2	IOMEM(0xe6150138)
+#define SMSTPCR3	IOMEM(0xe615013c)
+#define SMSTPCR4	IOMEM(0xe6150140)
 
 #define FSIDIVA		0xFE1F8000
 #define FSIDIVB		0xFE1F8008
@@ -89,7 +89,7 @@ static unsigned long div2_recalc(struct clk *clk)
 	return clk->parent->rate / 2;
 }
 
-static struct clk_ops div2_clk_ops = {
+static struct sh_clk_ops div2_clk_ops = {
 	.recalc		= div2_recalc,
 };
 
@@ -128,7 +128,7 @@ static unsigned long pllc01_recalc(struct clk *clk)
 	return clk->parent->rate * mult;
 }
 
-static struct clk_ops pllc01_clk_ops = {
+static struct sh_clk_ops pllc01_clk_ops = {
 	.recalc		= pllc01_recalc,
 };
 
@@ -276,7 +276,7 @@ static int pllc2_set_parent(struct clk *clk, struct clk *parent)
 	return 0;
 }
 
-static struct clk_ops pllc2_clk_ops = {
+static struct sh_clk_ops pllc2_clk_ops = {
 	.recalc		= pllc2_recalc,
 	.round_rate	= pllc2_round_rate,
 	.set_rate	= pllc2_set_rate,
@@ -468,7 +468,7 @@ static int fsidiv_set_rate(struct clk *clk, unsigned long rate)
 	return 0;
 }
 
-static struct clk_ops fsidiv_clk_ops = {
+static struct sh_clk_ops fsidiv_clk_ops = {
 	.recalc		= fsidiv_recalc,
 	.round_rate	= fsidiv_round_rate,
 	.set_rate	= fsidiv_set_rate,
@@ -511,7 +511,7 @@ enum { MSTP001, MSTP000,
        MSTP223,
        MSTP218, MSTP217, MSTP216, MSTP214, MSTP208, MSTP207,
        MSTP206, MSTP205, MSTP204, MSTP203, MSTP202, MSTP201, MSTP200,
-       MSTP328, MSTP323, MSTP322, MSTP314, MSTP313, MSTP312,
+	MSTP328, MSTP323, MSTP322, MSTP315, MSTP314, MSTP313, MSTP312,
        MSTP423, MSTP415, MSTP413, MSTP411, MSTP410, MSTP407, MSTP406,
        MSTP405, MSTP404, MSTP403, MSTP400,
        MSTP_NR };
@@ -553,6 +553,7 @@ static struct clk mstp_clks[MSTP_NR] = {
 	[MSTP328] = MSTP(&div6_clks[DIV6_SPU], SMSTPCR3, 28, 0), /* FSI2 */
 	[MSTP323] = MSTP(&div6_clks[DIV6_SUB], SMSTPCR3, 23, 0), /* IIC1 */
 	[MSTP322] = MSTP(&div6_clks[DIV6_SUB], SMSTPCR3, 22, 0), /* USB0 */
+	[MSTP315] = MSTP(&div4_clks[DIV4_HP], SMSTPCR3, 15, 0), /* FLCTL*/
 	[MSTP314] = MSTP(&div4_clks[DIV4_HP], SMSTPCR3, 14, 0), /* SDHI0 */
 	[MSTP313] = MSTP(&div4_clks[DIV4_HP], SMSTPCR3, 13, 0), /* SDHI1 */
 	[MSTP312] = MSTP(&div4_clks[DIV4_HP], SMSTPCR3, 12, 0), /* MMC */
@@ -653,6 +654,7 @@ static struct clk_lookup lookups[] = {
 	CLKDEV_DEV_ID("r8a66597_hcd.0", &mstp_clks[MSTP322]), /* USB0 */
 	CLKDEV_DEV_ID("r8a66597_udc.0", &mstp_clks[MSTP322]), /* USB0 */
 	CLKDEV_DEV_ID("renesas_usbhs.0", &mstp_clks[MSTP322]), /* USB0 */
+	CLKDEV_DEV_ID("sh_flctl.0", &mstp_clks[MSTP315]), /* FLCTL */
 	CLKDEV_DEV_ID("sh_mobile_sdhi.0", &mstp_clks[MSTP314]), /* SDHI0 */
 	CLKDEV_DEV_ID("sh_mobile_sdhi.1", &mstp_clks[MSTP313]), /* SDHI1 */
 	CLKDEV_DEV_ID("sh_mmcif.0", &mstp_clks[MSTP312]), /* MMC */
@@ -702,7 +704,7 @@ void __init sh7372_clock_init(void)
 		ret = sh_clk_div6_reparent_register(div6_reparent_clks, DIV6_REPARENT_NR);
 
 	if (!ret)
-		ret = sh_clk_mstp32_register(mstp_clks, MSTP_NR);
+		ret = sh_clk_mstp_register(mstp_clks, MSTP_NR);
 
 	for (k = 0; !ret && (k < ARRAY_SIZE(late_main_clks)); k++)
 		ret = clk_register(late_main_clks[k]);
@@ -710,7 +712,7 @@ void __init sh7372_clock_init(void)
 	clkdev_add_table(lookups, ARRAY_SIZE(lookups));
 
 	if (!ret)
-		clk_init();
+		shmobile_clk_init();
 	else
 		panic("failed to setup sh7372 clocks\n");
 

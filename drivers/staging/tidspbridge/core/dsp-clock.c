@@ -16,21 +16,20 @@
  * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
  */
 
+#define L4_34XX_BASE		0x48000000
+
 #include <linux/types.h>
 
 /*  ----------------------------------- Host OS */
 #include <dspbridge/host_os.h>
 #include <plat/dmtimer.h>
-#include <plat/mcbsp.h>
+#include <linux/platform_data/asoc-ti-mcbsp.h>
 
 /*  ----------------------------------- DSP/BIOS Bridge */
 #include <dspbridge/dbdefs.h>
 #include <dspbridge/drv.h>
 #include <dspbridge/dev.h>
 #include "_tiomap.h"
-
-/*  ----------------------------------- Trace & Debug */
-#include <dspbridge/dbc.h>
 
 /*  ----------------------------------- This */
 #include <dspbridge/clk.h>

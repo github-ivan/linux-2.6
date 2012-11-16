@@ -38,7 +38,6 @@
 
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
-#include <asm/system.h>
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/spr_defs.h>
@@ -272,7 +271,7 @@ asmlinkage long _sys_execve(const char __user *name,
 			    struct pt_regs *regs)
 {
 	int error;
-	char *filename;
+	struct filename *filename;
 
 	filename = getname(name);
 	error = PTR_ERR(filename);
@@ -280,7 +279,7 @@ asmlinkage long _sys_execve(const char __user *name,
 	if (IS_ERR(filename))
 		goto out;
 
-	error = do_execve(filename, argv, envp, regs);
+	error = do_execve(filename->name, argv, envp, regs);
 	putname(filename);
 
 out:

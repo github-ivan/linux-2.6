@@ -64,7 +64,6 @@
 #include <linux/delay.h>
 #include <linux/bitops.h>
 
-#include <asm/system.h>
 #include <asm/ecard.h>
 #include <asm/io.h>
 
@@ -100,13 +99,13 @@ typedef enum {
  * The SEEQ8005 doesn't like us writing to its registers
  * too quickly.
  */
-static inline void ether3_outb(int v, const void __iomem *r)
+static inline void ether3_outb(int v, void __iomem *r)
 {
 	writeb(v, r);
 	udelay(1);
 }
 
-static inline void ether3_outw(int v, const void __iomem *r)
+static inline void ether3_outw(int v, void __iomem *r)
 {
 	writew(v, r);
 	udelay(1);
@@ -643,7 +642,7 @@ if (next_ptr < RX_START || next_ptr >= RX_END) {
 			if (next_ptr <= this_ptr)
 				length += RX_END - RX_START;
 
-			skb = dev_alloc_skb(length + 2);
+			skb = netdev_alloc_skb(dev, length + 2);
 			if (skb) {
 				unsigned char *buf;
 

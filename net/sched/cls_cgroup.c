@@ -22,23 +22,6 @@
 #include <net/sock.h>
 #include <net/cls_cgroup.h>
 
-static struct cgroup_subsys_state *cgrp_create(struct cgroup_subsys *ss,
-					       struct cgroup *cgrp);
-static void cgrp_destroy(struct cgroup_subsys *ss, struct cgroup *cgrp);
-static int cgrp_populate(struct cgroup_subsys *ss, struct cgroup *cgrp);
-
-struct cgroup_subsys net_cls_subsys = {
-	.name		= "net_cls",
-	.create		= cgrp_create,
-	.destroy	= cgrp_destroy,
-	.populate	= cgrp_populate,
-#ifdef CONFIG_NET_CLS_CGROUP
-	.subsys_id	= net_cls_subsys_id,
-#endif
-	.module		= THIS_MODULE,
-};
-
-
 static inline struct cgroup_cls_state *cgrp_cls_state(struct cgroup *cgrp)
 {
 	return container_of(cgroup_subsys_state(cgrp, net_cls_subsys_id),
@@ -51,8 +34,7 @@ static inline struct cgroup_cls_state *task_cls_state(struct task_struct *p)
 			    struct cgroup_cls_state, css);
 }
 
-static struct cgroup_subsys_state *cgrp_create(struct cgroup_subsys *ss,
-						 struct cgroup *cgrp)
+static struct cgroup_subsys_state *cgrp_create(struct cgroup *cgrp)
 {
 	struct cgroup_cls_state *cs;
 
@@ -66,7 +48,7 @@ static struct cgroup_subsys_state *cgrp_create(struct cgroup_subsys *ss,
 	return &cs->css;
 }
 
-static void cgrp_destroy(struct cgroup_subsys *ss, struct cgroup *cgrp)
+static void cgrp_destroy(struct cgroup *cgrp)
 {
 	kfree(cgrp_cls_state(cgrp));
 }
@@ -88,12 +70,26 @@ static struct cftype ss_files[] = {
 		.read_u64 = read_classid,
 		.write_u64 = write_classid,
 	},
+	{ }	/* terminate */
 };
 
-static int cgrp_populate(struct cgroup_subsys *ss, struct cgroup *cgrp)
-{
-	return cgroup_add_files(cgrp, ss, ss_files, ARRAY_SIZE(ss_files));
-}
+struct cgroup_subsys net_cls_subsys = {
+	.name		= "net_cls",
+	.create		= cgrp_create,
+	.destroy	= cgrp_destroy,
+	.subsys_id	= net_cls_subsys_id,
+	.base_cftypes	= ss_files,
+	.module		= THIS_MODULE,
+
+	/*
+	 * While net_cls cgroup has the rudimentary hierarchy support of
+	 * inheriting the parent's classid on cgroup creation, it doesn't
+	 * properly propagates config changes in ancestors to their
+	 * descendents.  A child should follow the parent's configuration
+	 * but be allowed to override it.  Fix it and remove the following.
+	 */
+	.broken_hierarchy = true,
+};
 
 struct cls_cgroup_head {
 	u32			handle;
@@ -162,7 +158,8 @@ static const struct nla_policy cgroup_policy[TCA_CGROUP_MAX + 1] = {
 	[TCA_CGROUP_EMATCHES]	= { .type = NLA_NESTED },
 };
 
-static int cls_cgroup_change(struct tcf_proto *tp, unsigned long base,
+static int cls_cgroup_change(struct sk_buff *in_skb,
+			     struct tcf_proto *tp, unsigned long base,
 			     u32 handle, struct nlattr **tca,
 			     unsigned long *arg)
 {
@@ -294,12 +291,6 @@ static int __init init_cgroup_cls(void)
 	if (ret)
 		goto out;
 
-#ifndef CONFIG_NET_CLS_CGROUP
-	/* We can't use rcu_assign_pointer because this is an int. */
-	smp_wmb();
-	net_cls_subsys_id = net_cls_subsys.subsys_id;
-#endif
-
 	ret = register_tcf_proto_ops(&cls_cgroup_ops);
 	if (ret)
 		cgroup_unload_subsys(&net_cls_subsys);
@@ -311,11 +302,6 @@ out:
 static void __exit exit_cgroup_cls(void)
 {
 	unregister_tcf_proto_ops(&cls_cgroup_ops);
-
-#ifndef CONFIG_NET_CLS_CGROUP
-	net_cls_subsys_id = -1;
-	synchronize_rcu();
-#endif
 
 	cgroup_unload_subsys(&net_cls_subsys);
 }

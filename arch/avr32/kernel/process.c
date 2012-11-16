@@ -40,9 +40,7 @@ void cpu_idle(void)
 			cpu_idle_sleep();
 		rcu_idle_exit();
 		tick_nohz_idle_exit();
-		preempt_enable_no_resched();
-		schedule();
-		preempt_disable();
+		schedule_preempt_disabled();
 	}
 }
 
@@ -390,14 +388,14 @@ asmlinkage int sys_execve(const char __user *ufilename,
 			  struct pt_regs *regs)
 {
 	int error;
-	char *filename;
+	struct filename *filename;
 
 	filename = getname(ufilename);
 	error = PTR_ERR(filename);
 	if (IS_ERR(filename))
 		goto out;
 
-	error = do_execve(filename, uargv, uenvp, regs);
+	error = do_execve(filename->name, uargv, uenvp, regs);
 	putname(filename);
 
 out:

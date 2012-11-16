@@ -738,15 +738,16 @@ static int __devinit ehv_bc_tty_probe(struct platform_device *pdev)
 		goto error;
 	}
 
-	bc->dev = tty_register_device(ehv_bc_driver, i, &pdev->dev);
+	tty_port_init(&bc->port);
+	bc->port.ops = &ehv_bc_tty_port_ops;
+
+	bc->dev = tty_port_register_device(&bc->port, ehv_bc_driver, i,
+			&pdev->dev);
 	if (IS_ERR(bc->dev)) {
 		ret = PTR_ERR(bc->dev);
 		dev_err(&pdev->dev, "could not register tty (ret=%i)\n", ret);
 		goto error;
 	}
-
-	tty_port_init(&bc->port);
-	bc->port.ops = &ehv_bc_tty_port_ops;
 
 	dev_set_drvdata(&pdev->dev, bc);
 
@@ -825,7 +826,6 @@ static int __init ehv_bc_init(void)
 		goto error;
 	}
 
-	ehv_bc_driver->owner = THIS_MODULE;
 	ehv_bc_driver->driver_name = "ehv-bc";
 	ehv_bc_driver->name = ehv_bc_console.name;
 	ehv_bc_driver->type = TTY_DRIVER_TYPE_CONSOLE;

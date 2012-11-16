@@ -25,8 +25,6 @@ struct ath_softc;
 
 #define ATH_RATE_MAX     30
 #define RATE_TABLE_SIZE  72
-#define MAX_TX_RATE_PHY  48
-
 
 #define RC_INVALID	0x0000
 #define RC_LEGACY	0x0001
@@ -162,10 +160,6 @@ struct ath_rate_table {
 		u32 user_ratekbps;
 		u8 ratecode;
 		u8 dot11rate;
-		u8 ctrl_rate;
-		u8 cw40index;
-		u8 sgi_index;
-		u8 ht_index;
 	} info[RATE_TABLE_SIZE];
 	u32 probe_interval;
 	u8 initial_ratemax;

@@ -33,12 +33,11 @@
 #include <linux/input.h>
 #include <linux/input/sh_keysc.h>
 #include <linux/dma-mapping.h>
+#include <mach/irqs.h>
 #include <mach/sh7367.h>
 #include <mach/common.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-#include <asm/mach/map.h>
-#include <asm/mach/time.h>
 
 /*
  * IrDA
@@ -107,7 +106,7 @@ static void usb_host_port_power(int port, int power)
 		return;
 
 	/* set VBOUT/PWEN and EXTLP0 in DVSTCTR */
-	__raw_writew(__raw_readw(0xe6890008) | 0x600, 0xe6890008);
+	__raw_writew(__raw_readw(IOMEM(0xe6890008)) | 0x600, IOMEM(0xe6890008));
 }
 
 static struct r8a66597_platdata usb_host_data = {
@@ -246,27 +245,6 @@ static struct platform_device *g3evm_devices[] __initdata = {
 	&irda_device,
 };
 
-static struct map_desc g3evm_io_desc[] __initdata = {
-	/* create a 1:1 entity map for 0xe6xxxxxx
-	 * used by CPGA, INTC and PFC.
-	 */
-	{
-		.virtual	= 0xe6000000,
-		.pfn		= __phys_to_pfn(0xe6000000),
-		.length		= 256 << 20,
-		.type		= MT_DEVICE_NONSHARED
-	},
-};
-
-static void __init g3evm_map_io(void)
-{
-	iotable_init(g3evm_io_desc, ARRAY_SIZE(g3evm_io_desc));
-
-	/* setup early devices and console here as well */
-	sh7367_add_early_devices();
-	shmobile_setup_console();
-}
-
 static void __init g3evm_init(void)
 {
 	sh7367_pinmux_init();
@@ -301,10 +279,10 @@ static void __init g3evm_init(void)
 	gpio_request(GPIO_FN_IDIN, NULL);
 
 	/* setup USB phy */
-	__raw_writew(0x0300, 0xe605810a);	/* USBCR1 */
-	__raw_writew(0x00e0, 0xe60581c0);	/* CPFCH */
-	__raw_writew(0x6010, 0xe60581c6);	/* CGPOSR */
-	__raw_writew(0x8a0a, 0xe605810c);	/* USBCR2 */
+	__raw_writew(0x0300, IOMEM(0xe605810a));	/* USBCR1 */
+	__raw_writew(0x00e0, IOMEM(0xe60581c0));	/* CPFCH */
+	__raw_writew(0x6010, IOMEM(0xe60581c6));	/* CGPOSR */
+	__raw_writew(0x8a0a, IOMEM(0xe605810c));	/* USBCR2 */
 
 	/* KEYSC @ CN7 */
 	gpio_request(GPIO_FN_PORT42_KEYOUT0, NULL);
@@ -342,7 +320,7 @@ static void __init g3evm_init(void)
 	gpio_request(GPIO_FN_WE0_XWR0_FWE, NULL);
 	gpio_request(GPIO_FN_FRB, NULL);
 	/* FOE, FCDE, FSC on dedicated pins */
-	__raw_writel(__raw_readl(0xe6158048) & ~(1 << 15), 0xe6158048);
+	__raw_writel(__raw_readl(IOMEM(0xe6158048)) & ~(1 << 15), IOMEM(0xe6158048));
 
 	/* IrDA */
 	gpio_request(GPIO_FN_IRDA_OUT, NULL);
@@ -354,20 +332,12 @@ static void __init g3evm_init(void)
 	platform_add_devices(g3evm_devices, ARRAY_SIZE(g3evm_devices));
 }
 
-static void __init g3evm_timer_init(void)
-{
-	sh7367_clock_init();
-	shmobile_timer.init();
-}
-
-static struct sys_timer g3evm_timer = {
-	.init		= g3evm_timer_init,
-};
-
 MACHINE_START(G3EVM, "g3evm")
-	.map_io		= g3evm_map_io,
+	.map_io		= sh7367_map_io,
+	.init_early	= sh7367_add_early_devices,
 	.init_irq	= sh7367_init_irq,
 	.handle_irq	= shmobile_handle_irq_intc,
 	.init_machine	= g3evm_init,
-	.timer		= &g3evm_timer,
+	.init_late	= shmobile_init_late,
+	.timer		= &shmobile_timer,
 MACHINE_END

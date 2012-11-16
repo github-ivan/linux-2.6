@@ -17,7 +17,6 @@
 #ifndef _HOST_OS_H_
 #define _HOST_OS_H_
 
-#include <asm/system.h>
 #include <linux/atomic.h>
 #include <linux/semaphore.h>
 #include <linux/uaccess.h>
@@ -48,8 +47,8 @@
 #include <asm/cacheflush.h>
 #include <linux/dma-mapping.h>
 
-/* TODO -- Remove, once BP defines them */
-#define INT_DSP_MMU_IRQ        28
+/* TODO -- Remove, once omap-iommu is used */
+#define INT_DSP_MMU_IRQ        (28 + NR_IRQS)
 
 #define PRCM_VDD1 1
 

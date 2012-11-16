@@ -110,7 +110,7 @@ static const struct smb_to_posix_error mapping_table_ERRSRV[] = {
 	{ERRnoroom, -ENOSPC},
 	{ERRrmuns, -EUSERS},
 	{ERRtimeout, -ETIME},
-	{ERRnoresource, -ENOBUFS},
+	{ERRnoresource, -EREMOTEIO},
 	{ERRtoomanyuids, -EUSERS},
 	{ERRbaduid, -EACCES},
 	{ERRusempx, -EIO},
@@ -197,8 +197,7 @@ cifs_convert_address(struct sockaddr *dst, const char *src, int len)
 		memcpy(scope_id, pct + 1, slen);
 		scope_id[slen] = '\0';
 
-		rc = strict_strtoul(scope_id, 0,
-					(unsigned long *)&s6->sin6_scope_id);
+		rc = kstrtouint(scope_id, 0, &s6->sin6_scope_id);
 		rc = (rc == 0) ? 1 : 0;
 	}
 
@@ -413,7 +412,7 @@ static const struct {
 	 from NT_STATUS_INSUFFICIENT_RESOURCES to
 	 NT_STATUS_INSUFF_SERVER_RESOURCES during the session setup } */
 	{
-	ERRDOS, ERRnomem, NT_STATUS_INSUFFICIENT_RESOURCES}, {
+	ERRDOS, ERRnoresource, NT_STATUS_INSUFFICIENT_RESOURCES}, {
 	ERRDOS, ERRbadpath, NT_STATUS_DFS_EXIT_PATH_FOUND}, {
 	ERRDOS, 23, NT_STATUS_DEVICE_DATA_ERROR}, {
 	ERRHRD, ERRgeneral, NT_STATUS_DEVICE_NOT_CONNECTED}, {
@@ -683,7 +682,7 @@ static const struct {
 	ERRHRD, ERRgeneral, NT_STATUS_NO_USER_SESSION_KEY}, {
 	ERRDOS, 59, NT_STATUS_USER_SESSION_DELETED}, {
 	ERRHRD, ERRgeneral, NT_STATUS_RESOURCE_LANG_NOT_FOUND}, {
-	ERRDOS, ERRnomem, NT_STATUS_INSUFF_SERVER_RESOURCES}, {
+	ERRDOS, ERRnoresource, NT_STATUS_INSUFF_SERVER_RESOURCES}, {
 	ERRHRD, ERRgeneral, NT_STATUS_INVALID_BUFFER_SIZE}, {
 	ERRHRD, ERRgeneral, NT_STATUS_INVALID_ADDRESS_COMPONENT}, {
 	ERRHRD, ERRgeneral, NT_STATUS_INVALID_ADDRESS_WILDCARD}, {
@@ -836,8 +835,9 @@ ntstatus_to_dos(__u32 ntstatus, __u8 *eclass, __u16 *ecode)
 }
 
 int
-map_smb_to_linux_error(struct smb_hdr *smb, bool logErr)
+map_smb_to_linux_error(char *buf, bool logErr)
 {
+	struct smb_hdr *smb = (struct smb_hdr *)buf;
 	unsigned int i;
 	int rc = -EIO;	/* if transport error smb error may not be set */
 	__u8 smberrclass;
@@ -913,8 +913,9 @@ map_smb_to_linux_error(struct smb_hdr *smb, bool logErr)
  * portion, the number of word parameters and the data portion of the message
  */
 unsigned int
-smbCalcSize(struct smb_hdr *ptr)
+smbCalcSize(void *buf)
 {
+	struct smb_hdr *ptr = (struct smb_hdr *)buf;
 	return (sizeof(struct smb_hdr) + (2 * ptr->WordCount) +
 		2 /* size of the bcc field */ + get_bcc(ptr));
 }

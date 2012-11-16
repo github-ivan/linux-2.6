@@ -4,7 +4,7 @@
  * 	Evolved from s3c2443-ac97.c
  *
  * Copyright (c) 2010 Samsung Electronics Co. Ltd
- * 	Author: Jaswinder Singh <jassi.brar@samsung.com>
+ *	Author: Jaswinder Singh <jassisinghbrar@gmail.com>
  * 	Credits: Graeme Gregory, Sean Choi
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,7 +21,7 @@
 
 #include <mach/dma.h>
 #include <plat/regs-ac97.h>
-#include <plat/audio.h>
+#include <linux/platform_data/asoc-s3c.h>
 
 #include "dma.h"
 
@@ -511,7 +511,7 @@ static struct platform_driver s3c_ac97_driver = {
 
 module_platform_driver(s3c_ac97_driver);
 
-MODULE_AUTHOR("Jaswinder Singh, <jassi.brar@samsung.com>");
+MODULE_AUTHOR("Jaswinder Singh, <jassisinghbrar@gmail.com>");
 MODULE_DESCRIPTION("AC97 driver for the Samsung SoC");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:samsung-ac97");

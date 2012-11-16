@@ -421,24 +421,18 @@ static int atmel_lcdfb_check_var(struct fb_var_screeninfo *var,
 		var->red.length = var->green.length = var->blue.length
 			= var->bits_per_pixel;
 		break;
-	case 15:
 	case 16:
 		if (sinfo->lcd_wiring_mode == ATMEL_LCDC_WIRING_RGB) {
 			/* RGB:565 mode */
 			var->red.offset = 11;
 			var->blue.offset = 0;
-			var->green.length = 6;
-		} else if (sinfo->lcd_wiring_mode == ATMEL_LCDC_WIRING_RGB555) {
-			var->red.offset = 10;
-			var->blue.offset = 0;
-			var->green.length = 5;
 		} else {
-			/* BGR:555 mode */
+			/* BGR:565 mode */
 			var->red.offset = 0;
-			var->blue.offset = 10;
-			var->green.length = 5;
+			var->blue.offset = 11;
 		}
 		var->green.offset = 5;
+		var->green.length = 6;
 		var->red.length = var->blue.length = 5;
 		break;
 	case 32:
@@ -937,15 +931,17 @@ static int __init atmel_lcdfb_probe(struct platform_device *pdev)
 		}
 
 		info->screen_base = ioremap(info->fix.smem_start, info->fix.smem_len);
-		if (!info->screen_base)
+		if (!info->screen_base) {
+			ret = -ENOMEM;
 			goto release_intmem;
+		}
 
 		/*
 		 * Don't clear the framebuffer -- someone may have set
 		 * up a splash image.
 		 */
 	} else {
-		/* alocate memory buffer */
+		/* allocate memory buffer */
 		ret = atmel_lcdfb_alloc_video_memory(sinfo);
 		if (ret < 0) {
 			dev_err(dev, "cannot allocate framebuffer: %d\n", ret);
@@ -966,6 +962,7 @@ static int __init atmel_lcdfb_probe(struct platform_device *pdev)
 	sinfo->mmio = ioremap(info->fix.mmio_start, info->fix.mmio_len);
 	if (!sinfo->mmio) {
 		dev_err(dev, "cannot map LCDC registers\n");
+		ret = -ENOMEM;
 		goto release_mem;
 	}
 

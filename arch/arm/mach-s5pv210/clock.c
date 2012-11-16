@@ -175,7 +175,7 @@ static int s5pv210_clk_mask1_ctrl(struct clk *clk, int enable)
 	return s5p_gatectrl(S5P_CLK_SRC_MASK1, clk, enable);
 }
 
-static int exynos4_clk_hdmiphy_ctrl(struct clk *clk, int enable)
+static int s5pv210_clk_hdmiphy_ctrl(struct clk *clk, int enable)
 {
 	return s5p_gatectrl(S5P_HDMI_PHY_CONTROL, clk, enable);
 }
@@ -340,6 +340,11 @@ static struct clk init_clocks_off[] = {
 		.enable		= s5pv210_clk_ip0_ctrl,
 		.ctrlbit	= (1 << 26),
 	}, {
+		.name		= "jpeg",
+		.parent		= &clk_hclk_dsys.clk,
+		.enable		= s5pv210_clk_ip0_ctrl,
+		.ctrlbit	= (1 << 28),
+	}, {
 		.name		= "mfc",
 		.devname	= "s5p-mfc",
 		.parent		= &clk_pclk_psys.clk,
@@ -372,7 +377,7 @@ static struct clk init_clocks_off[] = {
 	}, {
 		.name		= "hdmiphy",
 		.devname	= "s5pv210-hdmi",
-		.enable		= exynos4_clk_hdmiphy_ctrl,
+		.enable		= s5pv210_clk_hdmiphy_ctrl,
 		.ctrlbit	= (1 << 0),
 	}, {
 		.name		= "dacphy",
@@ -440,19 +445,19 @@ static struct clk init_clocks_off[] = {
 		.ctrlbit	= (1 << 11),
 	}, {
 		.name		= "spi",
-		.devname	= "s3c64xx-spi.0",
+		.devname	= "s5pv210-spi.0",
 		.parent		= &clk_pclk_psys.clk,
 		.enable		= s5pv210_clk_ip3_ctrl,
 		.ctrlbit	= (1<<12),
 	}, {
 		.name		= "spi",
-		.devname	= "s3c64xx-spi.1",
+		.devname	= "s5pv210-spi.1",
 		.parent		= &clk_pclk_psys.clk,
 		.enable		= s5pv210_clk_ip3_ctrl,
 		.ctrlbit	= (1<<13),
 	}, {
 		.name		= "spi",
-		.devname	= "s3c64xx-spi.2",
+		.devname	= "s5pv210-spi.2",
 		.parent		= &clk_pclk_psys.clk,
 		.enable		= s5pv210_clk_ip3_ctrl,
 		.ctrlbit	= (1<<14),
@@ -1030,7 +1035,7 @@ static struct clksrc_clk clk_sclk_mmc3 = {
 static struct clksrc_clk clk_sclk_spi0 = {
 	.clk		= {
 		.name		= "sclk_spi",
-		.devname	= "s3c64xx-spi.0",
+		.devname	= "s5pv210-spi.0",
 		.enable		= s5pv210_clk_mask0_ctrl,
 		.ctrlbit	= (1 << 16),
 	},
@@ -1042,7 +1047,7 @@ static struct clksrc_clk clk_sclk_spi0 = {
 static struct clksrc_clk clk_sclk_spi1 = {
 	.clk		= {
 		.name		= "sclk_spi",
-		.devname	= "s3c64xx-spi.1",
+		.devname	= "s5pv210-spi.1",
 		.enable		= s5pv210_clk_mask0_ctrl,
 		.ctrlbit	= (1 << 17),
 	},
@@ -1326,8 +1331,8 @@ static struct clk_lookup s5pv210_clk_lookup[] = {
 	CLKDEV_INIT("s3c-sdhci.2", "mmc_busclk.2", &clk_sclk_mmc2.clk),
 	CLKDEV_INIT("s3c-sdhci.3", "mmc_busclk.2", &clk_sclk_mmc3.clk),
 	CLKDEV_INIT(NULL, "spi_busclk0", &clk_p),
-	CLKDEV_INIT("s3c64xx-spi.0", "spi_busclk1", &clk_sclk_spi0.clk),
-	CLKDEV_INIT("s3c64xx-spi.1", "spi_busclk1", &clk_sclk_spi1.clk),
+	CLKDEV_INIT("s5pv210-spi.0", "spi_busclk1", &clk_sclk_spi0.clk),
+	CLKDEV_INIT("s5pv210-spi.1", "spi_busclk1", &clk_sclk_spi1.clk),
 };
 
 void __init s5pv210_register_clocks(void)

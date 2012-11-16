@@ -469,11 +469,15 @@ enqueue:
 	if (slot->qlen == 1) {		/* The flow is new */
 		if (q->tail == NULL) {	/* It is the first flow */
 			slot->next = x;
-			q->tail = slot;
 		} else {
 			slot->next = q->tail->next;
 			q->tail->next = x;
 		}
+		/* We put this flow at the end of our flow list.
+		 * This might sound unfair for a new flow to wait after old ones,
+		 * but we could endup servicing new flows only, and freeze old ones.
+		 */
+		q->tail = slot;
 		/* We could use a bigger initial quantum for new flows */
 		slot->allot = q->scaled_quantum;
 	}
@@ -808,7 +812,8 @@ static int sfq_dump(struct Qdisc *sch, struct sk_buff *skb)
 	memcpy(&opt.stats, &q->stats, sizeof(opt.stats));
 	opt.flags	= q->flags;
 
-	NLA_PUT(skb, TCA_OPTIONS, sizeof(opt), &opt);
+	if (nla_put(skb, TCA_OPTIONS, sizeof(opt), &opt))
+		goto nla_put_failure;
 
 	return skb->len;
 

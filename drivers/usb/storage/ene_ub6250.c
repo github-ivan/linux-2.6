@@ -29,9 +29,21 @@
 #include "protocol.h"
 #include "debug.h"
 
+#define SD_INIT1_FIRMWARE "ene-ub6250/sd_init1.bin"
+#define SD_INIT2_FIRMWARE "ene-ub6250/sd_init2.bin"
+#define SD_RW_FIRMWARE "ene-ub6250/sd_rdwr.bin"
+#define MS_INIT_FIRMWARE "ene-ub6250/ms_init.bin"
+#define MSP_RW_FIRMWARE "ene-ub6250/msp_rdwr.bin"
+#define MS_RW_FIRMWARE "ene-ub6250/ms_rdwr.bin"
+
 MODULE_DESCRIPTION("Driver for ENE UB6250 reader");
 MODULE_LICENSE("GPL");
-
+MODULE_FIRMWARE(SD_INIT1_FIRMWARE);
+MODULE_FIRMWARE(SD_INIT2_FIRMWARE);
+MODULE_FIRMWARE(SD_RW_FIRMWARE);
+MODULE_FIRMWARE(MS_INIT_FIRMWARE);
+MODULE_FIRMWARE(MSP_RW_FIRMWARE);
+MODULE_FIRMWARE(MS_RW_FIRMWARE);
 
 /*
  * The table of devices
@@ -40,7 +52,7 @@ MODULE_LICENSE("GPL");
 		    vendorName, productName, useProtocol, useTransport, \
 		    initFunction, flags) \
 { USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
-	.driver_info = (flags)|(USB_US_TYPE_STOR<<24) }
+	.driver_info = (flags)}
 
 static struct usb_device_id ene_ub6250_usb_ids[] = {
 #	include "unusual_ene_ub6250.h"
@@ -674,7 +686,7 @@ static int sd_scsi_read(struct us_data *us, struct scsi_cmnd *srb)
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = blenByte;
-	bcb->Flags  = 0x80;
+	bcb->Flags  = US_BULK_FLAG_IN;
 	bcb->CDB[0] = 0xF1;
 	bcb->CDB[5] = (unsigned char)(bnByte);
 	bcb->CDB[4] = (unsigned char)(bnByte>>8);
@@ -858,7 +870,7 @@ static int ms_read_readpage(struct us_data *us, u32 PhyBlockAddr,
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = 0x200;
-	bcb->Flags      = 0x80;
+	bcb->Flags      = US_BULK_FLAG_IN;
 	bcb->CDB[0]     = 0xF1;
 
 	bcb->CDB[1]     = 0x02; /* in init.c ENE_MSInit() is 0x01 */
@@ -877,7 +889,7 @@ static int ms_read_readpage(struct us_data *us, u32 PhyBlockAddr,
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = 0x4;
-	bcb->Flags      = 0x80;
+	bcb->Flags      = US_BULK_FLAG_IN;
 	bcb->CDB[0]     = 0xF1;
 	bcb->CDB[1]     = 0x03;
 
@@ -1170,7 +1182,7 @@ static int ms_read_eraseblock(struct us_data *us, u32 PhyBlockAddr)
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = 0x200;
-	bcb->Flags = 0x80;
+	bcb->Flags = US_BULK_FLAG_IN;
 	bcb->CDB[0] = 0xF2;
 	bcb->CDB[1] = 0x06;
 	bcb->CDB[4] = (unsigned char)(bn);
@@ -1249,7 +1261,7 @@ static int ms_lib_overwrite_extra(struct us_data *us, u32 PhyBlockAddr,
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = 0x4;
-	bcb->Flags = 0x80;
+	bcb->Flags = US_BULK_FLAG_IN;
 	bcb->CDB[0] = 0xF2;
 	bcb->CDB[1] = 0x05;
 	bcb->CDB[5] = (unsigned char)(PageNum);
@@ -1331,7 +1343,7 @@ static int ms_lib_read_extra(struct us_data *us, u32 PhyBlock,
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = 0x4;
-	bcb->Flags      = 0x80;
+	bcb->Flags      = US_BULK_FLAG_IN;
 	bcb->CDB[0]     = 0xF1;
 	bcb->CDB[1]     = 0x03;
 	bcb->CDB[5]     = (unsigned char)(PageNum);
@@ -1533,7 +1545,7 @@ static int ms_lib_read_extrablock(struct us_data *us, u32 PhyBlock,
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = 0x4 * blen;
-	bcb->Flags      = 0x80;
+	bcb->Flags      = US_BULK_FLAG_IN;
 	bcb->CDB[0]     = 0xF1;
 	bcb->CDB[1]     = 0x03;
 	bcb->CDB[5]     = (unsigned char)(PageNum);
@@ -1650,7 +1662,7 @@ static int ms_scsi_read(struct us_data *us, struct scsi_cmnd *srb)
 		memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 		bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 		bcb->DataTransferLength = blenByte;
-		bcb->Flags  = 0x80;
+		bcb->Flags  = US_BULK_FLAG_IN;
 		bcb->CDB[0] = 0xF1;
 		bcb->CDB[1] = 0x02;
 		bcb->CDB[5] = (unsigned char)(bn);
@@ -1694,7 +1706,7 @@ static int ms_scsi_read(struct us_data *us, struct scsi_cmnd *srb)
 			memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 			bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 			bcb->DataTransferLength = 0x200 * len;
-			bcb->Flags  = 0x80;
+			bcb->Flags  = US_BULK_FLAG_IN;
 			bcb->CDB[0] = 0xF1;
 			bcb->CDB[1] = 0x02;
 			bcb->CDB[5] = (unsigned char)(blkno);
@@ -1827,7 +1839,7 @@ static int ene_get_card_type(struct us_data *us, u16 index, void *buf)
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength	= 0x01;
-	bcb->Flags			= 0x80;
+	bcb->Flags			= US_BULK_FLAG_IN;
 	bcb->CDB[0]			= 0xED;
 	bcb->CDB[2]			= (unsigned char)(index>>8);
 	bcb->CDB[3]			= (unsigned char)index;
@@ -1883,28 +1895,28 @@ static int ene_load_bincode(struct us_data *us, unsigned char flag)
 	/* For SD */
 	case SD_INIT1_PATTERN:
 		US_DEBUGP("SD_INIT1_PATTERN\n");
-		fw_name = "ene-ub6250/sd_init1.bin";
+		fw_name = SD_INIT1_FIRMWARE;
 		break;
 	case SD_INIT2_PATTERN:
 		US_DEBUGP("SD_INIT2_PATTERN\n");
-		fw_name = "ene-ub6250/sd_init2.bin";
+		fw_name = SD_INIT2_FIRMWARE;
 		break;
 	case SD_RW_PATTERN:
-		US_DEBUGP("SD_RDWR_PATTERN\n");
-		fw_name = "ene-ub6250/sd_rdwr.bin";
+		US_DEBUGP("SD_RW_PATTERN\n");
+		fw_name = SD_RW_FIRMWARE;
 		break;
 	/* For MS */
 	case MS_INIT_PATTERN:
 		US_DEBUGP("MS_INIT_PATTERN\n");
-		fw_name = "ene-ub6250/ms_init.bin";
+		fw_name = MS_INIT_FIRMWARE;
 		break;
 	case MSP_RW_PATTERN:
 		US_DEBUGP("MSP_RW_PATTERN\n");
-		fw_name = "ene-ub6250/msp_rdwr.bin";
+		fw_name = MSP_RW_FIRMWARE;
 		break;
 	case MS_RW_PATTERN:
 		US_DEBUGP("MS_RW_PATTERN\n");
-		fw_name = "ene-ub6250/ms_rdwr.bin";
+		fw_name = MS_RW_FIRMWARE;
 		break;
 	default:
 		US_DEBUGP("----------- Unknown PATTERN ----------\n");
@@ -1933,11 +1945,7 @@ static int ene_load_bincode(struct us_data *us, unsigned char flag)
 	kfree(buf);
 
 nofw:
-	if (sd_fw != NULL) {
-		release_firmware(sd_fw);
-		sd_fw = NULL;
-	}
-
+	release_firmware(sd_fw);
 	return result;
 }
 
@@ -2083,7 +2091,7 @@ static int ene_ms_init(struct us_data *us)
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = 0x200;
-	bcb->Flags      = 0x80;
+	bcb->Flags      = US_BULK_FLAG_IN;
 	bcb->CDB[0]     = 0xF1;
 	bcb->CDB[1]     = 0x01;
 
@@ -2134,7 +2142,7 @@ static int ene_sd_init(struct us_data *us)
 
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
-	bcb->Flags = 0x80;
+	bcb->Flags = US_BULK_FLAG_IN;
 	bcb->CDB[0] = 0xF2;
 
 	result = ene_send_scsi_cmd(us, FDIR_READ, NULL, 0);
@@ -2153,7 +2161,7 @@ static int ene_sd_init(struct us_data *us)
 	memset(bcb, 0, sizeof(struct bulk_cb_wrap));
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = 0x200;
-	bcb->Flags              = 0x80;
+	bcb->Flags              = US_BULK_FLAG_IN;
 	bcb->CDB[0]             = 0xF1;
 
 	result = ene_send_scsi_cmd(us, FDIR_READ, &buf, 0);
@@ -2407,6 +2415,7 @@ static struct usb_driver ene_ub6250_driver = {
 	.post_reset =	usb_stor_post_reset,
 	.id_table =	ene_ub6250_usb_ids,
 	.soft_unbind =	1,
+	.no_dynamic_id = 1,
 };
 
 module_usb_driver(ene_ub6250_driver);

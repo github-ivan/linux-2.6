@@ -52,7 +52,6 @@
 #include <asm/btext.h>
 #include <asm/nvram.h>
 #include <asm/setup.h>
-#include <asm/system.h>
 #include <asm/rtas.h>
 #include <asm/iommu.h>
 #include <asm/serial.h>
@@ -209,6 +208,8 @@ void __init early_setup(unsigned long dt_ptr)
 
 	/* Fix up paca fields required for the boot cpu */
 	get_paca()->cpu_start = 1;
+	/* Allow percpu accesses to "work" until we setup percpu data */
+	get_paca()->data_offset = 0;
 
 	/* Probe the machine type */
 	probe_machine();
@@ -598,7 +599,7 @@ void __init setup_arch(char **cmdline_p)
 	/* Initialize the MMU context management stuff */
 	mmu_context_init();
 
-	kvm_rma_init();
+	kvm_linear_init();
 
 	ppc64_boot_msg(0x15, "Setup Done");
 }

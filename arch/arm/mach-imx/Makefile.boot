@@ -37,6 +37,3 @@ initrd_phys-$(CONFIG_SOC_IMX53)	:= 0x70800000
 zreladdr-$(CONFIG_SOC_IMX6Q)	+= 0x10008000
 params_phys-$(CONFIG_SOC_IMX6Q)	:= 0x10000100
 initrd_phys-$(CONFIG_SOC_IMX6Q)	:= 0x10800000
-
-dtb-$(CONFIG_SOC_IMX6Q)	+= imx6q-arm2.dtb \
-			   imx6q-sabrelite.dtb

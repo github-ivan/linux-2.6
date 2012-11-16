@@ -78,7 +78,7 @@ static LIST_HEAD(free_entries);
 static DEFINE_SPINLOCK(free_entries_lock);
 
 /* Global disable flag - will be set in case of an error */
-static bool global_disable __read_mostly;
+static u32 global_disable __read_mostly;
 
 /* Global error count */
 static u32 error_count;
@@ -119,11 +119,6 @@ static const char *type2name[4] = { "single", "page",
 
 static const char *dir2name[4] = { "DMA_BIDIRECTIONAL", "DMA_TO_DEVICE",
 				   "DMA_FROM_DEVICE", "DMA_NONE" };
-
-/* little merge helper - remove it after the merge window */
-#ifndef BUS_NOTIFY_UNBOUND_DRIVER
-#define BUS_NOTIFY_UNBOUND_DRIVER 0x0005
-#endif
 
 /*
  * The access to some variables in this macro is racy. We can't use atomic_t
@@ -170,7 +165,7 @@ static bool driver_filter(struct device *dev)
 		return false;
 
 	/* driver filter on but not yet initialized */
-	drv = get_driver(dev->driver);
+	drv = dev->driver;
 	if (!drv)
 		return false;
 
@@ -185,7 +180,6 @@ static bool driver_filter(struct device *dev)
 	}
 
 	read_unlock_irqrestore(&driver_name_lock, flags);
-	put_driver(drv);
 
 	return ret;
 }
@@ -270,7 +264,7 @@ static struct dma_debug_entry *__hash_bucket_find(struct hash_bucket *bucket,
 						  match_fn match)
 {
 	struct dma_debug_entry *entry, *ret = NULL;
-	int matches = 0, match_lvl, last_lvl = 0;
+	int matches = 0, match_lvl, last_lvl = -1;
 
 	list_for_each_entry(entry, &bucket->list, list) {
 		if (!match(ref, entry))
@@ -299,7 +293,7 @@ static struct dma_debug_entry *__hash_bucket_find(struct hash_bucket *bucket,
 		} else if (match_lvl > last_lvl) {
 			/*
 			 * We found an entry that fits better then the
-			 * previous one
+			 * previous one or it is the 1st match.
 			 */
 			last_lvl = match_lvl;
 			ret      = entry;
@@ -431,7 +425,7 @@ static struct dma_debug_entry *__dma_entry_alloc(void)
  */
 static struct dma_debug_entry *dma_entry_alloc(void)
 {
-	struct dma_debug_entry *entry = NULL;
+	struct dma_debug_entry *entry;
 	unsigned long flags;
 
 	spin_lock_irqsave(&free_entries_lock, flags);
@@ -439,10 +433,13 @@ static struct dma_debug_entry *dma_entry_alloc(void)
 	if (list_empty(&free_entries)) {
 		pr_err("DMA-API: debugging out of memory - disabling\n");
 		global_disable = true;
-		goto out;
+		spin_unlock_irqrestore(&free_entries_lock, flags);
+		return NULL;
 	}
 
 	entry = __dma_entry_alloc();
+
+	spin_unlock_irqrestore(&free_entries_lock, flags);
 
 #ifdef CONFIG_STACKTRACE
 	entry->stacktrace.max_entries = DMA_DEBUG_STACKTRACE_ENTRIES;
@@ -450,9 +447,6 @@ static struct dma_debug_entry *dma_entry_alloc(void)
 	entry->stacktrace.skip = 2;
 	save_stack_trace(&entry->stacktrace);
 #endif
-
-out:
-	spin_unlock_irqrestore(&free_entries_lock, flags);
 
 	return entry;
 }
@@ -658,7 +652,7 @@ static int dma_debug_fs_init(void)
 
 	global_disable_dent = debugfs_create_bool("disabled", 0444,
 			dma_debug_dent,
-			(u32 *)&global_disable);
+			&global_disable);
 	if (!global_disable_dent)
 		goto out_err;
 
