@@ -93,8 +93,46 @@ static const char radeon_family_name[][16] = {
 	"TAHITI",
 	"PITCAIRN",
 	"VERDE",
+	"OLAND",
+	"HAINAN",
 	"LAST",
 };
+
+/**
+ * radeon_program_register_sequence - program an array of registers.
+ *
+ * @rdev: radeon_device pointer
+ * @registers: pointer to the register array
+ * @array_size: size of the register array
+ *
+ * Programs an array or registers with and and or masks.
+ * This is a helper for setting golden registers.
+ */
+void radeon_program_register_sequence(struct radeon_device *rdev,
+				      const u32 *registers,
+				      const u32 array_size)
+{
+	u32 tmp, reg, and_mask, or_mask;
+	int i;
+
+	if (array_size % 3)
+		return;
+
+	for (i = 0; i < array_size; i +=3) {
+		reg = registers[i + 0];
+		and_mask = registers[i + 1];
+		or_mask = registers[i + 2];
+
+		if (and_mask == 0xffffffff) {
+			tmp = or_mask;
+		} else {
+			tmp = RREG32(reg);
+			tmp &= ~and_mask;
+			tmp |= or_mask;
+		}
+		WREG32(reg, tmp);
+	}
+}
 
 /**
  * radeon_surface_init - Clear GPU surface registers.
@@ -358,7 +396,7 @@ void radeon_vram_location(struct radeon_device *rdev, struct radeon_mc *mc, u64 
 	uint64_t limit = (uint64_t)radeon_vram_limit << 20;
 
 	mc->vram_start = base;
-	if (mc->mc_vram_size > (0xFFFFFFFF - base + 1)) {
+	if (mc->mc_vram_size > (rdev->mc.mc_mask - base + 1)) {
 		dev_warn(rdev->dev, "limiting VRAM to PCI aperture size\n");
 		mc->real_vram_size = mc->aper_size;
 		mc->mc_vram_size = mc->aper_size;
@@ -393,7 +431,7 @@ void radeon_gtt_location(struct radeon_device *rdev, struct radeon_mc *mc)
 {
 	u64 size_af, size_bf;
 
-	size_af = ((0xFFFFFFFF - mc->vram_end) + mc->gtt_base_align) & ~mc->gtt_base_align;
+	size_af = ((rdev->mc.mc_mask - mc->vram_end) + mc->gtt_base_align) & ~mc->gtt_base_align;
 	size_bf = mc->vram_start & ~mc->gtt_base_align;
 	if (size_bf > size_af) {
 		if (mc->gtt_size > size_bf) {
@@ -429,7 +467,8 @@ bool radeon_card_posted(struct radeon_device *rdev)
 {
 	uint32_t reg;
 
-	if (efi_enabled && rdev->pdev->subsystem_vendor == PCI_VENDOR_ID_APPLE)
+	if (efi_enabled(EFI_BOOT) &&
+	    rdev->pdev->subsystem_vendor == PCI_VENDOR_ID_APPLE)
 		return false;
 
 	/* first check CRTCs */
@@ -757,6 +796,11 @@ int radeon_atombios_init(struct radeon_device *rdev)
 	atom_card_info->pll_write = cail_pll_write;
 
 	rdev->mode_info.atom_context = atom_parse(atom_card_info, rdev->bios);
+	if (!rdev->mode_info.atom_context) {
+		radeon_atombios_fini(rdev);
+		return -ENOMEM;
+	}
+
 	mutex_init(&rdev->mode_info.atom_context->mutex);
 	radeon_atom_initialize_bios_scratch_regs(rdev->ddev);
 	atom_allocate_fb_scratch(rdev->mode_info.atom_context);
@@ -776,9 +820,11 @@ void radeon_atombios_fini(struct radeon_device *rdev)
 {
 	if (rdev->mode_info.atom_context) {
 		kfree(rdev->mode_info.atom_context->scratch);
-		kfree(rdev->mode_info.atom_context);
 	}
+	kfree(rdev->mode_info.atom_context);
+	rdev->mode_info.atom_context = NULL;
 	kfree(rdev->mode_info.atom_card_info);
+	rdev->mode_info.atom_card_info = NULL;
 }
 
 /* COMBIOS */
@@ -897,6 +943,25 @@ static void radeon_check_arguments(struct radeon_device *rdev)
 }
 
 /**
+ * radeon_switcheroo_quirk_long_wakeup - return true if longer d3 delay is
+ * needed for waking up.
+ *
+ * @pdev: pci dev pointer
+ */
+static bool radeon_switcheroo_quirk_long_wakeup(struct pci_dev *pdev)
+{
+
+	/* 6600m in a macbook pro */
+	if (pdev->subsystem_vendor == PCI_VENDOR_ID_APPLE &&
+	    pdev->subsystem_device == 0x00e2) {
+		printk(KERN_INFO "radeon: quirking longer d3 wakeup delay\n");
+		return true;
+	}
+
+	return false;
+}
+
+/**
  * radeon_switcheroo_set_state - set switcheroo state
  *
  * @pdev: pci dev pointer
@@ -910,10 +975,19 @@ static void radeon_switcheroo_set_state(struct pci_dev *pdev, enum vga_switchero
 	struct drm_device *dev = pci_get_drvdata(pdev);
 	pm_message_t pmm = { .event = PM_EVENT_SUSPEND };
 	if (state == VGA_SWITCHEROO_ON) {
+		unsigned d3_delay = dev->pdev->d3_delay;
+
 		printk(KERN_INFO "radeon: switched on\n");
 		/* don't suspend or resume card normally */
 		dev->switch_power_state = DRM_SWITCH_POWER_CHANGING;
+
+		if (d3_delay < 20 && radeon_switcheroo_quirk_long_wakeup(pdev))
+			dev->pdev->d3_delay = 20;
+
 		radeon_resume_kms(dev);
+
+		dev->pdev->d3_delay = d3_delay;
+
 		dev->switch_power_state = DRM_SWITCH_POWER_ON;
 		drm_kms_helper_poll_enable(dev);
 	} else {
@@ -1031,6 +1105,17 @@ int radeon_device_init(struct radeon_device *rdev,
 		radeon_agp_disable(rdev);
 	}
 
+	/* Set the internal MC address mask
+	 * This is the max address of the GPU's
+	 * internal address space.
+	 */
+	if (rdev->family >= CHIP_CAYMAN)
+		rdev->mc.mc_mask = 0xffffffffffULL; /* 40 bit MC */
+	else if (rdev->family >= CHIP_CEDAR)
+		rdev->mc.mc_mask = 0xfffffffffULL; /* 36 bit MC */
+	else
+		rdev->mc.mc_mask = 0xffffffffULL; /* 32 bit MC */
+
 	/* set DMA mask + need_dma32 flags.
 	 * PCIE - can handle 40-bits.
 	 * IGP - can handle 40-bits
@@ -1059,6 +1144,7 @@ int radeon_device_init(struct radeon_device *rdev,
 
 	/* Registers mapping */
 	/* TODO: block userspace mapping of io register */
+	spin_lock_init(&rdev->mmio_idx_lock);
 	rdev->rmmio_base = pci_resource_start(rdev->pdev, 2);
 	rdev->rmmio_size = pci_resource_len(rdev->pdev, 2);
 	rdev->rmmio = ioremap(rdev->rmmio_base, rdev->rmmio_size);
@@ -1092,6 +1178,11 @@ int radeon_device_init(struct radeon_device *rdev,
 	r = radeon_ib_ring_tests(rdev);
 	if (r)
 		DRM_ERROR("ib ring test failed (%d).\n", r);
+
+	r = radeon_gem_debugfs_init(rdev);
+	if (r) {
+		DRM_ERROR("registering gem debugfs failed (%d).\n", r);
+	}
 
 	if (rdev->flags & RADEON_IS_AGP && !rdev->accel_working) {
 		/* Acceleration not working on AGP card try again
@@ -1163,6 +1254,7 @@ int radeon_suspend_kms(struct drm_device *dev, pm_message_t state)
 	struct drm_crtc *crtc;
 	struct drm_connector *connector;
 	int i, r;
+	bool force_completion = false;
 
 	if (dev == NULL || dev->dev_private == NULL) {
 		return -ENODEV;
@@ -1205,8 +1297,16 @@ int radeon_suspend_kms(struct drm_device *dev, pm_message_t state)
 
 	mutex_lock(&rdev->ring_lock);
 	/* wait for gpu to finish processing current batch */
-	for (i = 0; i < RADEON_NUM_RINGS; i++)
-		radeon_fence_wait_empty_locked(rdev, i);
+	for (i = 0; i < RADEON_NUM_RINGS; i++) {
+		r = radeon_fence_wait_empty_locked(rdev, i);
+		if (r) {
+			/* delay GPU reset to resume */
+			force_completion = true;
+		}
+	}
+	if (force_completion) {
+		radeon_fence_driver_force_completion(rdev);
+	}
 	mutex_unlock(&rdev->ring_lock);
 
 	radeon_save_bios_scratch_regs(rdev);
@@ -1337,7 +1437,6 @@ retry:
 	}
 
 	radeon_restore_bios_scratch_regs(rdev);
-	drm_helper_resume_force_mode(rdev->ddev);
 
 	if (!r) {
 		for (i = 0; i < RADEON_NUM_RINGS; ++i) {
@@ -1357,10 +1456,13 @@ retry:
 			}
 		}
 	} else {
+		radeon_fence_driver_force_completion(rdev);
 		for (i = 0; i < RADEON_NUM_RINGS; ++i) {
 			kfree(ring_data[i]);
 		}
 	}
+
+	drm_helper_resume_force_mode(rdev->ddev);
 
 	ttm_bo_unlock_delayed_workqueue(&rdev->mman.bdev, resched);
 	if (r) {

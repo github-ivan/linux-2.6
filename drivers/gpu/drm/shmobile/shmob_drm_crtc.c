@@ -494,10 +494,10 @@ static int shmob_drm_crtc_page_flip(struct drm_crtc *crtc,
 
 	if (event) {
 		event->pipe = 0;
+		drm_vblank_get(dev, 0);
 		spin_lock_irqsave(&dev->event_lock, flags);
 		scrtc->event = event;
 		spin_unlock_irqrestore(&dev->event_lock, flags);
-		drm_vblank_get(dev, 0);
 	}
 
 	return 0;
@@ -748,7 +748,7 @@ int shmob_drm_connector_create(struct shmob_drm_device *sdev,
 	connector->encoder = encoder;
 
 	drm_helper_connector_dpms(connector, DRM_MODE_DPMS_OFF);
-	drm_connector_property_set_value(connector,
+	drm_object_property_set_value(&connector->base,
 		sdev->ddev->mode_config.dpms_property, DRM_MODE_DPMS_OFF);
 
 	return 0;

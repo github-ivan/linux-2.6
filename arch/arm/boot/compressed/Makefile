@@ -24,6 +24,9 @@ endif
 AFLAGS_head.o += -DTEXT_OFFSET=$(TEXT_OFFSET)
 HEAD	= head.o
 OBJS	+= misc.o decompress.o
+ifeq ($(CONFIG_DEBUG_UNCOMPRESS),y)
+OBJS	+= debug.o
+endif
 FONTC	= $(srctree)/drivers/video/console/font_acorn_8x8.c
 
 # string library code (-Os is enforced to keep it much smaller)
@@ -45,17 +48,8 @@ ifeq ($(CONFIG_ARCH_SHARK),y)
 OBJS		+= head-shark.o ofw-shark.o
 endif
 
-ifeq ($(CONFIG_ARCH_P720T),y)
-# Borrow this code from SA1100
-OBJS		+= head-sa1100.o
-endif
-
 ifeq ($(CONFIG_ARCH_SA1100),y)
 OBJS		+= head-sa1100.o
-endif
-
-ifeq ($(CONFIG_ARCH_VT8500),y)
-OBJS		+= head-vt8500.o
 endif
 
 ifeq ($(CONFIG_CPU_XSCALE),y)
@@ -129,7 +123,7 @@ ORIG_CFLAGS := $(KBUILD_CFLAGS)
 KBUILD_CFLAGS = $(subst -pg, , $(ORIG_CFLAGS))
 endif
 
-ccflags-y := -fpic -fno-builtin -I$(obj)
+ccflags-y := -fpic -mno-single-pic-base -fno-builtin -I$(obj)
 asflags-y := -Wa,-march=all -DZIMAGE
 
 # Supply kernel BSS size to the decompressor via a linker symbol.

@@ -340,7 +340,7 @@ static bool radeon_atom_mode_fixup(struct drm_encoder *encoder,
 	    ((radeon_encoder->active_device & (ATOM_DEVICE_DFP_SUPPORT | ATOM_DEVICE_LCD_SUPPORT)) ||
 	     (radeon_encoder_get_dp_bridge_encoder_id(encoder) != ENCODER_OBJECT_ID_NONE))) {
 		struct drm_connector *connector = radeon_get_connector_for_encoder(encoder);
-		radeon_dp_set_link_config(connector, mode);
+		radeon_dp_set_link_config(connector, adjusted_mode);
 	}
 
 	return true;
@@ -1625,7 +1625,7 @@ radeon_atom_encoder_dpms_dig(struct drm_encoder *encoder, int mode)
 			atombios_dig_transmitter_setup(encoder, ATOM_TRANSMITTER_ACTION_SETUP, 0, 0);
 			atombios_dig_transmitter_setup(encoder, ATOM_TRANSMITTER_ACTION_ENABLE, 0, 0);
 			/* some early dce3.2 boards have a bug in their transmitter control table */
-			if ((rdev->family != CHIP_RV710) || (rdev->family != CHIP_RV730))
+			if ((rdev->family != CHIP_RV710) && (rdev->family != CHIP_RV730))
 				atombios_dig_transmitter_setup(encoder, ATOM_TRANSMITTER_ACTION_ENABLE_OUTPUT, 0, 0);
 		}
 		if (ENCODER_MODE_IS_DP(atombios_get_encoder_mode(encoder)) && connector) {
@@ -2150,13 +2150,10 @@ radeon_atom_encoder_mode_set(struct drm_encoder *encoder,
 	atombios_apply_encoder_quirks(encoder, adjusted_mode);
 
 	if (atombios_get_encoder_mode(encoder) == ATOM_ENCODER_MODE_HDMI) {
-		r600_hdmi_enable(encoder);
-		if (ASIC_IS_DCE6(rdev))
-			; /* TODO (use pointers instead of if-s?) */
-		else if (ASIC_IS_DCE4(rdev))
-			evergreen_hdmi_setmode(encoder, adjusted_mode);
-		else
-			r600_hdmi_setmode(encoder, adjusted_mode);
+		if (rdev->asic->display.hdmi_enable)
+			radeon_hdmi_enable(rdev, encoder, true);
+		if (rdev->asic->display.hdmi_setmode)
+			radeon_hdmi_setmode(rdev, encoder, adjusted_mode);
 	}
 }
 
@@ -2413,8 +2410,10 @@ static void radeon_atom_encoder_disable(struct drm_encoder *encoder)
 
 disable_done:
 	if (radeon_encoder_is_digital(encoder)) {
-		if (atombios_get_encoder_mode(encoder) == ATOM_ENCODER_MODE_HDMI)
-			r600_hdmi_disable(encoder);
+		if (atombios_get_encoder_mode(encoder) == ATOM_ENCODER_MODE_HDMI) {
+			if (rdev->asic->display.hdmi_enable)
+				radeon_hdmi_enable(rdev, encoder, false);
+		}
 		dig = radeon_encoder->enc_priv;
 		dig->dig_encoder = -1;
 	}

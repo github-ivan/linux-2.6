@@ -318,7 +318,8 @@ extern UDItype __udiv_qrnnd();
 	     "rM" ((USItype)(bh)), \
 	     "rM" ((USItype)(al)), \
 	     "rM" ((USItype)(bl)))
-#if defined(_PA_RISC1_1)
+#if 0 && defined(_PA_RISC1_1)
+/* xmpyu uses floating point register which is not allowed in Linux kernel. */
 #define umul_ppmm(wh, wl, u, v) \
 do { \
 	union {UDItype __ll; \
@@ -337,7 +338,7 @@ do { \
 #define UMUL_TIME 40
 #define UDIV_TIME 80
 #endif
-#ifndef LONGLONG_STANDALONE
+#if 0 /* #ifndef LONGLONG_STANDALONE */
 #define udiv_qrnnd(q, r, n1, n0, d) \
 do { USItype __r; \
 	(q) = __udiv_qrnnd(&__r, (n1), (n0), (d)); \
@@ -641,7 +642,14 @@ do { \
 	**************  MIPS  *****************
 	***************************************/
 #if defined(__mips__) && W_TYPE_SIZE == 32
-#if __GNUC__ > 2 || __GNUC_MINOR__ >= 7
+#if __GNUC__ >= 4 && __GNUC_MINOR__ >= 4
+#define umul_ppmm(w1, w0, u, v)			\
+do {						\
+	UDItype __ll = (UDItype)(u) * (v);	\
+	w1 = __ll >> 32;			\
+	w0 = __ll;				\
+} while (0)
+#elif __GNUC__ > 2 || __GNUC_MINOR__ >= 7
 #define umul_ppmm(w1, w0, u, v) \
 	__asm__ ("multu %2,%3" \
 	: "=l" ((USItype)(w0)), \
@@ -666,7 +674,15 @@ do { \
 	**************  MIPS/64  **************
 	***************************************/
 #if (defined(__mips) && __mips >= 3) && W_TYPE_SIZE == 64
-#if __GNUC__ > 2 || __GNUC_MINOR__ >= 7
+#if __GNUC__ >= 4 && __GNUC_MINOR__ >= 4
+#define umul_ppmm(w1, w0, u, v) \
+do {									\
+	typedef unsigned int __ll_UTItype __attribute__((mode(TI)));	\
+	__ll_UTItype __ll = (__ll_UTItype)(u) * (v);			\
+	w1 = __ll >> 64;						\
+	w0 = __ll;							\
+} while (0)
+#elif __GNUC__ > 2 || __GNUC_MINOR__ >= 7
 #define umul_ppmm(w1, w0, u, v) \
 	__asm__ ("dmultu %2,%3" \
 	: "=l" ((UDItype)(w0)), \

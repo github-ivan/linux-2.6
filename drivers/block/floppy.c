@@ -3601,7 +3601,7 @@ static void __init config_types(void)
 		pr_cont("\n");
 }
 
-static int floppy_release(struct gendisk *disk, fmode_t mode)
+static void floppy_release(struct gendisk *disk, fmode_t mode)
 {
 	int drive = (long)disk->private_data;
 
@@ -3615,8 +3615,6 @@ static int floppy_release(struct gendisk *disk, fmode_t mode)
 		opened_bdev[drive] = NULL;
 	mutex_unlock(&open_lock);
 	mutex_unlock(&floppy_mutex);
-
-	return 0;
 }
 
 /*
@@ -3777,7 +3775,6 @@ static int __floppy_read_block_0(struct block_device *bdev)
 	bio_vec.bv_len = size;
 	bio_vec.bv_offset = 0;
 	bio.bi_vcnt = 1;
-	bio.bi_idx = 0;
 	bio.bi_size = size;
 	bio.bi_bdev = bdev;
 	bio.bi_sector = 0;
@@ -4330,6 +4327,7 @@ out_unreg_region:
 out_unreg_blkdev:
 	unregister_blkdev(FLOPPY_MAJOR, "fd");
 out_put_disk:
+	destroy_workqueue(floppy_wq);
 	for (drive = 0; drive < N_DRIVE; drive++) {
 		if (!disks[drive])
 			break;
@@ -4340,7 +4338,6 @@ out_put_disk:
 		}
 		put_disk(disks[drive]);
 	}
-	destroy_workqueue(floppy_wq);
 	return err;
 }
 
@@ -4555,6 +4552,8 @@ static void __exit floppy_module_exit(void)
 	unregister_blkdev(FLOPPY_MAJOR, "fd");
 	platform_driver_unregister(&floppy_driver);
 
+	destroy_workqueue(floppy_wq);
+
 	for (drive = 0; drive < N_DRIVE; drive++) {
 		del_timer_sync(&motor_off_timer[drive]);
 
@@ -4578,7 +4577,6 @@ static void __exit floppy_module_exit(void)
 
 	cancel_delayed_work_sync(&fd_timeout);
 	cancel_delayed_work_sync(&fd_timer);
-	destroy_workqueue(floppy_wq);
 
 	if (atomic_read(&usage_count))
 		floppy_release_irq_and_dma();

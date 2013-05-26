@@ -80,7 +80,7 @@ static inline unsigned long radeon_bo_size(struct radeon_bo *bo)
 
 static inline bool radeon_bo_is_reserved(struct radeon_bo *bo)
 {
-	return !!atomic_read(&bo->tbo.reserved);
+	return ttm_bo_is_reserved(&bo->tbo);
 }
 
 static inline unsigned radeon_bo_ngpu_pages(struct radeon_bo *bo)
@@ -128,7 +128,7 @@ extern int radeon_bo_init(struct radeon_device *rdev);
 extern void radeon_bo_fini(struct radeon_device *rdev);
 extern void radeon_bo_list_add_object(struct radeon_bo_list *lobj,
 				struct list_head *head);
-extern int radeon_bo_list_validate(struct list_head *head);
+extern int radeon_bo_list_validate(struct list_head *head, int ring);
 extern int radeon_bo_fbdev_mmap(struct radeon_bo *bo,
 				struct vm_area_struct *vma);
 extern int radeon_bo_set_tiling_flags(struct radeon_bo *bo,

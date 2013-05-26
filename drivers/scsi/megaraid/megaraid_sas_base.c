@@ -18,7 +18,7 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  *
  *  FILE: megaraid_sas_base.c
- *  Version : v06.504.01.00-rc1
+ *  Version : v06.506.00.00-rc1
  *
  *  Authors: LSI Corporation
  *           Sreenivas Bagalkote
@@ -2060,9 +2060,9 @@ megasas_service_aen(struct megasas_instance *instance, struct megasas_cmd *cmd)
 		} else {
 			ev->instance = instance;
 			instance->ev = ev;
-			INIT_WORK(&ev->hotplug_work, megasas_aen_polling);
-			schedule_delayed_work(
-				(struct delayed_work *)&ev->hotplug_work, 0);
+			INIT_DELAYED_WORK(&ev->hotplug_work,
+					  megasas_aen_polling);
+			schedule_delayed_work(&ev->hotplug_work, 0);
 		}
 	}
 }
@@ -3972,8 +3972,8 @@ fail_set_dma_mask:
  * @pdev:		PCI device structure
  * @id:			PCI ids of supported hotplugged adapter
  */
-static int __devinit
-megasas_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
+static int megasas_probe_one(struct pci_dev *pdev,
+			     const struct pci_device_id *id)
 {
 	int rval, pos, i, j;
 	struct Scsi_Host *host;
@@ -3984,12 +3984,12 @@ megasas_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (reset_devices) {
 		pos = pci_find_capability(pdev, PCI_CAP_ID_MSIX);
 		if (pos) {
-			pci_read_config_word(pdev, msi_control_reg(pos),
+			pci_read_config_word(pdev, pos + PCI_MSIX_FLAGS,
 					     &control);
 			if (control & PCI_MSIX_FLAGS_ENABLE) {
 				dev_info(&pdev->dev, "resetting MSI-X\n");
 				pci_write_config_word(pdev,
-						      msi_control_reg(pos),
+						      pos + PCI_MSIX_FLAGS,
 						      control &
 						      ~PCI_MSIX_FLAGS_ENABLE);
 			}
@@ -4352,8 +4352,7 @@ megasas_suspend(struct pci_dev *pdev, pm_message_t state)
 	/* cancel the delayed work if this work still in queue */
 	if (instance->ev != NULL) {
 		struct megasas_aen_event *ev = instance->ev;
-		cancel_delayed_work_sync(
-			(struct delayed_work *)&ev->hotplug_work);
+		cancel_delayed_work_sync(&ev->hotplug_work);
 		instance->ev = NULL;
 	}
 
@@ -4526,7 +4525,7 @@ fail_ready_state:
  * megasas_detach_one -	PCI hot"un"plug entry point
  * @pdev:		PCI device structure
  */
-static void __devexit megasas_detach_one(struct pci_dev *pdev)
+static void megasas_detach_one(struct pci_dev *pdev)
 {
 	int i;
 	struct Scsi_Host *host;
@@ -4545,8 +4544,7 @@ static void __devexit megasas_detach_one(struct pci_dev *pdev)
 	/* cancel the delayed work if this work still in queue*/
 	if (instance->ev != NULL) {
 		struct megasas_aen_event *ev = instance->ev;
-		cancel_delayed_work_sync(
-			(struct delayed_work *)&ev->hotplug_work);
+		cancel_delayed_work_sync(&ev->hotplug_work);
 		instance->ev = NULL;
 	}
 
@@ -4933,11 +4931,12 @@ static int megasas_mgmt_ioctl_fw(struct file *file, unsigned long arg)
 		printk(KERN_ERR "megaraid_sas: timed out while"
 			"waiting for HBA to recover\n");
 		error = -ENODEV;
-		goto out_kfree_ioc;
+		goto out_up;
 	}
 	spin_unlock_irqrestore(&instance->hba_lock, flags);
 
 	error = megasas_mgmt_fw_ioctl(instance, user_ioc, ioc);
+      out_up:
 	up(&instance->ioctl_sem);
 
       out_kfree_ioc:
@@ -5121,7 +5120,7 @@ static struct pci_driver megasas_pci_driver = {
 	.name = "megaraid_sas",
 	.id_table = megasas_pci_table,
 	.probe = megasas_probe_one,
-	.remove = __devexit_p(megasas_detach_one),
+	.remove = megasas_detach_one,
 	.suspend = megasas_suspend,
 	.resume = megasas_resume,
 	.shutdown = megasas_shutdown,
@@ -5190,7 +5189,7 @@ static void
 megasas_aen_polling(struct work_struct *work)
 {
 	struct megasas_aen_event *ev =
-		container_of(work, struct megasas_aen_event, hotplug_work);
+		container_of(work, struct megasas_aen_event, hotplug_work.work);
 	struct megasas_instance *instance = ev->instance;
 	union megasas_evt_class_locale class_locale;
 	struct  Scsi_Host *host;

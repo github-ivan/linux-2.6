@@ -47,6 +47,7 @@ nv50_fifo_playlist_update(struct nv50_fifo_priv *priv)
 	struct nouveau_gpuobj *cur;
 	int i, p;
 
+	mutex_lock(&nv_subdev(priv)->mutex);
 	cur = priv->playlist[priv->cur_playlist];
 	priv->cur_playlist = !priv->cur_playlist;
 
@@ -60,6 +61,7 @@ nv50_fifo_playlist_update(struct nv50_fifo_priv *priv)
 	nv_wr32(priv, 0x0032f4, cur->addr >> 12);
 	nv_wr32(priv, 0x0032ec, p);
 	nv_wr32(priv, 0x002500, 0x00000101);
+	mutex_unlock(&nv_subdev(priv)->mutex);
 }
 
 static int
@@ -112,14 +114,6 @@ nv50_fifo_context_detach(struct nouveau_object *parent, bool suspend,
 		return -EINVAL;
 	}
 
-	nv_wo32(base->eng, addr + 0x00, 0x00000000);
-	nv_wo32(base->eng, addr + 0x04, 0x00000000);
-	nv_wo32(base->eng, addr + 0x08, 0x00000000);
-	nv_wo32(base->eng, addr + 0x0c, 0x00000000);
-	nv_wo32(base->eng, addr + 0x10, 0x00000000);
-	nv_wo32(base->eng, addr + 0x14, 0x00000000);
-	bar->flush(bar);
-
 	/* HW bug workaround:
 	 *
 	 * PFIFO will hang forever if the connected engines don't report
@@ -137,12 +131,23 @@ nv50_fifo_context_detach(struct nouveau_object *parent, bool suspend,
 	/* do the kickoff... */
 	nv_wr32(priv, 0x0032fc, nv_gpuobj(base)->addr >> 12);
 	if (!nv_wait_ne(priv, 0x0032fc, 0xffffffff, 0xffffffff)) {
-		nv_error(priv, "channel %d unload timeout\n", chan->base.chid);
+		nv_error(priv, "channel %d [%s] unload timeout\n",
+			 chan->base.chid, nouveau_client_name(chan));
 		if (suspend)
 			ret = -EBUSY;
 	}
-
 	nv_wr32(priv, 0x00b860, me);
+
+	if (ret == 0) {
+		nv_wo32(base->eng, addr + 0x00, 0x00000000);
+		nv_wo32(base->eng, addr + 0x04, 0x00000000);
+		nv_wo32(base->eng, addr + 0x08, 0x00000000);
+		nv_wo32(base->eng, addr + 0x0c, 0x00000000);
+		nv_wo32(base->eng, addr + 0x10, 0x00000000);
+		nv_wo32(base->eng, addr + 0x14, 0x00000000);
+		bar->flush(bar);
+	}
+
 	return ret;
 }
 
@@ -194,10 +199,10 @@ nv50_fifo_chan_ctor_dma(struct nouveau_object *parent,
 
 	ret = nouveau_fifo_channel_create(parent, engine, oclass, 0, 0xc00000,
 					  0x2000, args->pushbuf,
-					  (1 << NVDEV_ENGINE_DMAOBJ) |
-					  (1 << NVDEV_ENGINE_SW) |
-					  (1 << NVDEV_ENGINE_GR) |
-					  (1 << NVDEV_ENGINE_MPEG), &chan);
+					  (1ULL << NVDEV_ENGINE_DMAOBJ) |
+					  (1ULL << NVDEV_ENGINE_SW) |
+					  (1ULL << NVDEV_ENGINE_GR) |
+					  (1ULL << NVDEV_ENGINE_MPEG), &chan);
 	*pobject = nv_object(chan);
 	if (ret)
 		return ret;
@@ -207,7 +212,8 @@ nv50_fifo_chan_ctor_dma(struct nouveau_object *parent,
 	nv_parent(chan)->object_attach = nv50_fifo_object_attach;
 	nv_parent(chan)->object_detach = nv50_fifo_object_detach;
 
-	ret = nouveau_ramht_new(parent, parent, 0x8000, 16, &chan->ramht);
+	ret = nouveau_ramht_new(nv_object(chan), nv_object(chan), 0x8000, 16,
+				&chan->ramht);
 	if (ret)
 		return ret;
 
@@ -247,10 +253,10 @@ nv50_fifo_chan_ctor_ind(struct nouveau_object *parent,
 
 	ret = nouveau_fifo_channel_create(parent, engine, oclass, 0, 0xc00000,
 					  0x2000, args->pushbuf,
-					  (1 << NVDEV_ENGINE_DMAOBJ) |
-					  (1 << NVDEV_ENGINE_SW) |
-					  (1 << NVDEV_ENGINE_GR) |
-					  (1 << NVDEV_ENGINE_MPEG), &chan);
+					  (1ULL << NVDEV_ENGINE_DMAOBJ) |
+					  (1ULL << NVDEV_ENGINE_SW) |
+					  (1ULL << NVDEV_ENGINE_GR) |
+					  (1ULL << NVDEV_ENGINE_MPEG), &chan);
 	*pobject = nv_object(chan);
 	if (ret)
 		return ret;
@@ -260,7 +266,8 @@ nv50_fifo_chan_ctor_ind(struct nouveau_object *parent,
 	nv_parent(chan)->object_attach = nv50_fifo_object_attach;
 	nv_parent(chan)->object_detach = nv50_fifo_object_detach;
 
-	ret = nouveau_ramht_new(parent, parent, 0x8000, 16, &chan->ramht);
+	ret = nouveau_ramht_new(nv_object(chan), nv_object(chan), 0x8000, 16,
+			       &chan->ramht);
 	if (ret)
 		return ret;
 
@@ -370,17 +377,17 @@ nv50_fifo_context_ctor(struct nouveau_object *parent,
 	if (ret)
 		return ret;
 
-	ret = nouveau_gpuobj_new(parent, nv_object(base), 0x0200, 0x1000,
-				 NVOBJ_FLAG_ZERO_ALLOC, &base->ramfc);
+	ret = nouveau_gpuobj_new(nv_object(base), nv_object(base), 0x0200,
+				 0x1000, NVOBJ_FLAG_ZERO_ALLOC, &base->ramfc);
 	if (ret)
 		return ret;
 
-	ret = nouveau_gpuobj_new(parent, nv_object(base), 0x1200, 0,
+	ret = nouveau_gpuobj_new(nv_object(base), nv_object(base), 0x1200, 0,
 				 NVOBJ_FLAG_ZERO_ALLOC, &base->eng);
 	if (ret)
 		return ret;
 
-	ret = nouveau_gpuobj_new(parent, nv_object(base), 0x4000, 0, 0,
+	ret = nouveau_gpuobj_new(nv_object(base), nv_object(base), 0x4000, 0, 0,
 				&base->pgd);
 	if (ret)
 		return ret;
@@ -434,12 +441,12 @@ nv50_fifo_ctor(struct nouveau_object *parent, struct nouveau_object *engine,
 	if (ret)
 		return ret;
 
-	ret = nouveau_gpuobj_new(parent, NULL, 128 * 4, 0x1000, 0,
+	ret = nouveau_gpuobj_new(nv_object(priv), NULL, 128 * 4, 0x1000, 0,
 				&priv->playlist[0]);
 	if (ret)
 		return ret;
 
-	ret = nouveau_gpuobj_new(parent, NULL, 128 * 4, 0x1000, 0,
+	ret = nouveau_gpuobj_new(nv_object(priv), NULL, 128 * 4, 0x1000, 0,
 				&priv->playlist[1]);
 	if (ret)
 		return ret;
@@ -478,7 +485,7 @@ nv50_fifo_init(struct nouveau_object *object)
 	nv_wr32(priv, 0x002044, 0x01003fff);
 
 	nv_wr32(priv, 0x002100, 0xffffffff);
-	nv_wr32(priv, 0x002140, 0xffffffff);
+	nv_wr32(priv, 0x002140, 0xbfffffff);
 
 	for (i = 0; i < 128; i++)
 		nv_wr32(priv, 0x002600 + (i * 4), 0x00000000);

@@ -40,6 +40,7 @@
 #include "xfs_utils.h"
 #include "xfs_qm.h"
 #include "xfs_trace.h"
+#include "xfs_icache.h"
 
 /*
  * The global quota manager. There is only one of these for the entire
@@ -616,6 +617,20 @@ xfs_qm_dqdetach(
 	}
 }
 
+int
+xfs_qm_calc_dquots_per_chunk(
+	struct xfs_mount	*mp,
+	unsigned int		nbblks)	/* basic block units */
+{
+	unsigned int	ndquots;
+
+	ASSERT(nbblks > 0);
+	ndquots = BBTOB(nbblks);
+	do_div(ndquots, sizeof(xfs_dqblk_t));
+
+	return ndquots;
+}
+
 /*
  * This initializes all the quota information that's kept in the
  * mount structure
@@ -655,9 +670,8 @@ xfs_qm_init_quotainfo(
 
 	/* Precalc some constants */
 	qinf->qi_dqchunklen = XFS_FSB_TO_BB(mp, XFS_DQUOT_CLUSTER_SIZE_FSB);
-	ASSERT(qinf->qi_dqchunklen);
-	qinf->qi_dqperchunk = BBTOB(qinf->qi_dqchunklen);
-	do_div(qinf->qi_dqperchunk, sizeof(xfs_dqblk_t));
+	qinf->qi_dqperchunk = xfs_qm_calc_dquots_per_chunk(mp,
+							qinf->qi_dqchunklen);
 
 	mp->m_qflags |= (mp->m_sb.sb_qflags & XFS_ALL_QUOTA_CHKD);
 
@@ -891,10 +905,15 @@ xfs_qm_dqiter_bufs(
 	while (blkcnt--) {
 		error = xfs_trans_read_buf(mp, NULL, mp->m_ddev_targp,
 			      XFS_FSB_TO_DADDR(mp, bno),
-			      mp->m_quotainfo->qi_dqchunklen, 0, &bp);
+			      mp->m_quotainfo->qi_dqchunklen, 0, &bp,
+			      &xfs_dquot_buf_ops);
 		if (error)
 			break;
 
+		/*
+		 * XXX(hch): need to figure out if it makes sense to validate
+		 *	     the CRC here.
+		 */
 		xfs_qm_reset_dqcounts(mp, bp, firstid, type);
 		xfs_buf_delwri_queue(bp, buffer_list);
 		xfs_buf_relse(bp);
@@ -978,7 +997,8 @@ xfs_qm_dqiterate(
 				while (rablkcnt--) {
 					xfs_buf_readahead(mp->m_ddev_targp,
 					       XFS_FSB_TO_DADDR(mp, rablkno),
-					       mp->m_quotainfo->qi_dqchunklen);
+					       mp->m_quotainfo->qi_dqchunklen,
+					       NULL);
 					rablkno++;
 				}
 			}
@@ -1054,7 +1074,7 @@ xfs_qm_quotacheck_dqadjust(
 	 * There are no timers for the default values set in the root dquot.
 	 */
 	if (dqp->q_core.d_id) {
-		xfs_qm_adjust_dqlimits(mp, &dqp->q_core);
+		xfs_qm_adjust_dqlimits(mp, dqp);
 		xfs_qm_adjust_dqtimers(mp, &dqp->q_core);
 	}
 
@@ -1453,7 +1473,7 @@ xfs_qm_dqreclaim_one(
 	int			error;
 
 	if (!xfs_dqlock_nowait(dqp))
-		goto out_busy;
+		goto out_move_tail;
 
 	/*
 	 * This dquot has acquired a reference in the meantime remove it from
@@ -1476,7 +1496,7 @@ xfs_qm_dqreclaim_one(
 	 * getting flushed to disk, we don't want to reclaim it.
 	 */
 	if (!xfs_dqflock_nowait(dqp))
-		goto out_busy;
+		goto out_unlock_move_tail;
 
 	if (XFS_DQ_IS_DIRTY(dqp)) {
 		struct xfs_buf	*bp = NULL;
@@ -1487,7 +1507,7 @@ xfs_qm_dqreclaim_one(
 		if (error) {
 			xfs_warn(mp, "%s: dquot %p flush failed",
 				 __func__, dqp);
-			goto out_busy;
+			goto out_unlock_move_tail;
 		}
 
 		xfs_buf_delwri_queue(bp, buffer_list);
@@ -1496,7 +1516,7 @@ xfs_qm_dqreclaim_one(
 		 * Give the dquot another try on the freelist, as the
 		 * flushing will take some time.
 		 */
-		goto out_busy;
+		goto out_unlock_move_tail;
 	}
 	xfs_dqfunlock(dqp);
 
@@ -1515,14 +1535,13 @@ xfs_qm_dqreclaim_one(
 	XFS_STATS_INC(xs_qm_dqreclaims);
 	return;
 
-out_busy:
-	xfs_dqunlock(dqp);
-
 	/*
 	 * Move the dquot to the tail of the list so that we don't spin on it.
 	 */
+out_unlock_move_tail:
+	xfs_dqunlock(dqp);
+out_move_tail:
 	list_move_tail(&dqp->q_lru, &qi->qi_lru_list);
-
 	trace_xfs_dqreclaim_busy(dqp);
 	XFS_STATS_INC(xs_qm_dqreclaim_misses);
 }
@@ -1582,10 +1601,9 @@ xfs_qm_write_sb_changes(
 	int		error;
 
 	tp = xfs_trans_alloc(mp, XFS_TRANS_QM_SBCHANGE);
-	if ((error = xfs_trans_reserve(tp, 0,
-				      mp->m_sb.sb_sectsize + 128, 0,
-				      0,
-				      XFS_DEFAULT_LOG_COUNT))) {
+	error = xfs_trans_reserve(tp, 0, XFS_QM_SBCHANGE_LOG_RES(mp),
+				  0, 0, XFS_DEFAULT_LOG_COUNT);
+	if (error) {
 		xfs_trans_cancel(tp, 0);
 		return error;
 	}

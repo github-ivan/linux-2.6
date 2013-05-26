@@ -67,6 +67,10 @@
 #define BOOKE_INTERRUPT_HV_SYSCALL 40
 #define BOOKE_INTERRUPT_HV_PRIV 41
 
+/* altivec */
+#define BOOKE_INTERRUPT_ALTIVEC_UNAVAIL 42
+#define BOOKE_INTERRUPT_ALTIVEC_ASSIST 43
+
 /* book3s */
 
 #define BOOK3S_INTERRUPT_SYSTEM_RESET	0x100
@@ -118,6 +122,7 @@
 
 #define RESUME_FLAG_NV          (1<<0)  /* Reload guest nonvolatile state? */
 #define RESUME_FLAG_HOST        (1<<1)  /* Resume host? */
+#define RESUME_FLAG_ARCH1	(1<<2)
 
 #define RESUME_GUEST            0
 #define RESUME_GUEST_NV         RESUME_FLAG_NV

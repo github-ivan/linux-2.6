@@ -60,6 +60,8 @@ struct ipu_crtc {
 	int			irq;
 	u32			interface_pix_fmt;
 	unsigned long		di_clkflags;
+	int			di_hsync_pin;
+	int			di_vsync_pin;
 };
 
 #define to_ipu_crtc(x) container_of(x, struct ipu_crtc, base)
@@ -116,7 +118,7 @@ static void ipu_crtc_dpms(struct drm_crtc *crtc, int mode)
 {
 	struct ipu_crtc *ipu_crtc = to_ipu_crtc(crtc);
 
-	dev_info(ipu_crtc->dev, "%s mode: %d\n", __func__, mode);
+	dev_dbg(ipu_crtc->dev, "%s mode: %d\n", __func__, mode);
 
 	switch (mode) {
 	case DRM_MODE_DPMS_ON:
@@ -254,6 +256,9 @@ static int ipu_crtc_mode_set(struct drm_crtc *crtc,
 	sig_cfg.clkflags = ipu_crtc->di_clkflags;
 
 	sig_cfg.v_to_h_sync = 0;
+
+	sig_cfg.hsync_pin = ipu_crtc->di_hsync_pin;
+	sig_cfg.vsync_pin = ipu_crtc->di_vsync_pin;
 
 	if (ipu_crtc->dp) {
 		ret = ipu_dp_setup_channel(ipu_crtc->dp, IPUV3_COLORSPACE_RGB,
@@ -406,13 +411,17 @@ static void ipu_disable_vblank(struct drm_crtc *crtc)
 }
 
 static int ipu_set_interface_pix_fmt(struct drm_crtc *crtc, u32 encoder_type,
-		u32 pixfmt)
+		u32 pixfmt, int hsync_pin, int vsync_pin)
 {
 	struct ipu_crtc *ipu_crtc = to_ipu_crtc(crtc);
 
 	ipu_crtc->interface_pix_fmt = pixfmt;
+	ipu_crtc->di_hsync_pin = hsync_pin;
+	ipu_crtc->di_vsync_pin = vsync_pin;
 
 	switch (encoder_type) {
+	case DRM_MODE_ENCODER_DAC:
+	case DRM_MODE_ENCODER_TVDAC:
 	case DRM_MODE_ENCODER_LVDS:
 		ipu_crtc->di_clkflags = IPU_DI_CLKMODE_SYNC |
 			IPU_DI_CLKMODE_EXT;
@@ -452,7 +461,7 @@ static int ipu_get_resources(struct ipu_crtc *ipu_crtc,
 	int ret;
 
 	ipu_crtc->ipu_ch = ipu_idmac_get(ipu, pdata->dma[0]);
-	if (IS_ERR_OR_NULL(ipu_crtc->ipu_ch)) {
+	if (IS_ERR(ipu_crtc->ipu_ch)) {
 		ret = PTR_ERR(ipu_crtc->ipu_ch);
 		goto err_out;
 	}
@@ -472,7 +481,7 @@ static int ipu_get_resources(struct ipu_crtc *ipu_crtc,
 	if (pdata->dp >= 0) {
 		ipu_crtc->dp = ipu_dp_get(ipu, pdata->dp);
 		if (IS_ERR(ipu_crtc->dp)) {
-			ret = PTR_ERR(ipu_crtc->ipu_ch);
+			ret = PTR_ERR(ipu_crtc->dp);
 			goto err_out;
 		}
 	}
@@ -482,17 +491,6 @@ static int ipu_get_resources(struct ipu_crtc *ipu_crtc,
 		ret = PTR_ERR(ipu_crtc->di);
 		goto err_out;
 	}
-
-	ipu_crtc->irq = ipu_idmac_channel_irq(ipu, ipu_crtc->ipu_ch,
-			IPU_IRQ_EOF);
-	ret = devm_request_irq(ipu_crtc->dev, ipu_crtc->irq, ipu_irq_handler, 0,
-			"imx_drm", ipu_crtc);
-	if (ret < 0) {
-		dev_err(ipu_crtc->dev, "irq request failed with %d.\n", ret);
-		goto err_out;
-	}
-
-	disable_irq(ipu_crtc->irq);
 
 	return 0;
 err_out:
@@ -504,6 +502,7 @@ err_out:
 static int ipu_crtc_init(struct ipu_crtc *ipu_crtc,
 		struct ipu_client_platformdata *pdata)
 {
+	struct ipu_soc *ipu = dev_get_drvdata(ipu_crtc->dev->parent);
 	int ret;
 
 	ret = ipu_get_resources(ipu_crtc, pdata);
@@ -522,6 +521,17 @@ static int ipu_crtc_init(struct ipu_crtc *ipu_crtc,
 		goto err_put_resources;
 	}
 
+	ipu_crtc->irq = ipu_idmac_channel_irq(ipu, ipu_crtc->ipu_ch,
+			IPU_IRQ_EOF);
+	ret = devm_request_irq(ipu_crtc->dev, ipu_crtc->irq, ipu_irq_handler, 0,
+			"imx_drm", ipu_crtc);
+	if (ret < 0) {
+		dev_err(ipu_crtc->dev, "irq request failed with %d.\n", ret);
+		goto err_put_resources;
+	}
+
+	disable_irq(ipu_crtc->irq);
+
 	return 0;
 
 err_put_resources:
@@ -530,7 +540,7 @@ err_put_resources:
 	return ret;
 }
 
-static int __devinit ipu_drm_probe(struct platform_device *pdev)
+static int ipu_drm_probe(struct platform_device *pdev)
 {
 	struct ipu_client_platformdata *pdata = pdev->dev.platform_data;
 	struct ipu_crtc *ipu_crtc;
@@ -548,13 +558,15 @@ static int __devinit ipu_drm_probe(struct platform_device *pdev)
 	ipu_crtc->dev = &pdev->dev;
 
 	ret = ipu_crtc_init(ipu_crtc, pdata);
+	if (ret)
+		return ret;
 
 	platform_set_drvdata(pdev, ipu_crtc);
 
 	return 0;
 }
 
-static int __devexit ipu_drm_remove(struct platform_device *pdev)
+static int ipu_drm_remove(struct platform_device *pdev)
 {
 	struct ipu_crtc *ipu_crtc = platform_get_drvdata(pdev);
 
@@ -570,7 +582,7 @@ static struct platform_driver ipu_drm_driver = {
 		.name = "imx-ipuv3-crtc",
 	},
 	.probe = ipu_drm_probe,
-	.remove = __devexit_p(ipu_drm_remove),
+	.remove = ipu_drm_remove,
 };
 module_platform_driver(ipu_drm_driver);
 
